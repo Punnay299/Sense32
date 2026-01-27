@@ -159,27 +159,40 @@ def main():
          logging.error("No valid datasets loaded.")
          return
          
-    final_dataset = torch.utils.data.ConcatDataset(datasets)
-    logging.info(f"Total Combined Samples: {len(final_dataset)}")
     
-    loader = DataLoader(final_dataset, batch_size=args.batch_size, shuffle=True)
+    # Split Train/Val (80/20)
+    final_dataset = torch.utils.data.ConcatDataset(datasets)
+    total_len = len(final_dataset)
+    train_len = int(0.8 * total_len)
+    val_len = total_len - train_len
+    train_dataset, val_dataset = torch.utils.data.random_split(final_dataset, [train_len, val_len])
+    
+    logging.info(f"Total Samples: {total_len} (Train: {train_len}, Val: {val_len})")
+    
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
     
     # Device configuration
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f"Using device: {device}")
 
     # Model (Input=2 features, Output=66 (33*2))
-    # MediaPipe Pose has 33 landmarks. We predict x,y for each -> 66 values.
     model = WifiPoseModel(input_features=2, output_points=33).to(device)
     
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+    
     criterion_pose = nn.MSELoss()
     criterion_pres = nn.BCELoss()
     
     logging.info("Starting training...")
+    best_val_loss = float('inf')
+    
     for epoch in range(args.epochs):
-        total_loss = 0
-        for batch in loader:
+        # TRAIN
+        model.train()
+        train_loss = 0
+        for batch in train_loader:
             rf = batch["rf"].to(device)
             pose_gt = batch["pose"].to(device)
             pres_gt = batch["presence"].to(device)
@@ -188,23 +201,50 @@ def main():
             pose_pred, pres_pred = model(rf)
             
             loss_pres = criterion_pres(pres_pred, pres_gt)
-            # Only calc pose loss if presence is true (masking)
-            # Simple approach: Mask loss
             mask = pres_gt.expand_as(pose_pred)
             loss_pose = criterion_pose(pose_pred * mask, pose_gt * mask)
             
             loss = loss_pres + loss_pose
             loss.backward()
             optimizer.step()
+            train_loss += loss.item()
             
-            total_loss += loss.item()
-            
-        print(f"Epoch {epoch+1}/{args.epochs}, Loss: {total_loss/len(loader):.4f}")
+        avg_train_loss = train_loss / len(train_loader) if len(train_loader) > 0 else 0
         
-    # Save
-    os.makedirs("models", exist_ok=True)
-    torch.save(model.state_dict(), "models/best.pth")
+        # VALIDATE
+        model.eval()
+        val_loss = 0
+        with torch.no_grad():
+            for batch in val_loader:
+                rf = batch["rf"].to(device)
+                pose_gt = batch["pose"].to(device)
+                pres_gt = batch["presence"].to(device)
+                
+                pose_pred, pres_pred = model(rf)
+                
+                loss_pres = criterion_pres(pres_pred, pres_gt)
+                mask = pres_gt.expand_as(pose_pred)
+                loss_pose = criterion_pose(pose_pred * mask, pose_gt * mask)
+                
+                loss = loss_pres + loss_pose
+                val_loss += loss.item()
+        
+        avg_val_loss = val_loss / len(val_loader) if len(val_loader) > 0 else 0
+        
+        # Scheduler Step
+        scheduler.step(avg_val_loss)
+        
+        print(f"Epoch {epoch+1}/{args.epochs} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+        
+        # Save Best
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            os.makedirs("models", exist_ok=True)
+            torch.save(model.state_dict(), "models/best.pth")
+            
+    logging.info(f"Training Complete. Best Val Loss: {best_val_loss:.4f}")
     logging.info("Model saved to models/best.pth")
 
 if __name__ == "__main__":
     main()
+

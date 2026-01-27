@@ -1,4 +1,5 @@
 import threading
+import os
 import queue
 import time
 import json
@@ -18,6 +19,10 @@ try:
     SCAPY_AVAILABLE = True
 except ImportError:
     SCAPY_AVAILABLE = False
+
+if SCAPY_AVAILABLE:
+    from scapy.all import sniff, RadioTap, Dot11, Dot11Beacon, Dot11ProbeResp
+
 
 class RFInterface(ABC):
     def __init__(self, callback=None):
@@ -230,8 +235,19 @@ class LinuxPollingCapture(RFInterface):
                         return (signal_strength / 2.0) - 100.0
         except:
             pass
-            
+
+        # Fallback 3: iw (Modern Linux)
+        try:
+            cmd = f"iw dev {self.interface} link"
+            output = subprocess.check_output(cmd, shell=True).decode('utf-8')
+            match = re.search(r"signal:\s+(-?\d+)", output)
+            if match:
+                return float(match.group(1))
+        except:
+            pass
+
         return -100.0
+
 
     def _get_rtt(self):
         try:
@@ -267,6 +283,152 @@ class LinuxPollingCapture(RFInterface):
             delta = time.time() - start_t
             if delta < 0.05:
                 time.sleep(0.05 - delta)
+
+class ScapyRFCapture(RFInterface):
+    """
+    High-Performance Passive Sniffer using Scapy.
+    Captures raw RSSI from Beacon frames.
+    Requires Root/Sudo privileges and Monitor Mode usually.
+    """
+    def __init__(self, interface=None, callback=None):
+        super().__init__(callback)
+        self.interface = interface
+        if self.interface is None:
+            self.interface = self._detect_interface()
+        
+        if not SCAPY_AVAILABLE:
+            raise ImportError("Scapy not installed. Run 'pip install scapy'")
+
+    def _detect_interface(self):
+        """Finds the first wireless interface."""
+        # Method 1: Check /sys/class/net/ for wireless interfaces
+        try:
+            interfaces = os.listdir('/sys/class/net/')
+            for iface in interfaces:
+                # Common wireless prefixes/logic
+                path = os.path.join('/sys/class/net/', iface, 'wireless')
+                if os.path.exists(path) or iface.startswith('wl'):
+                     logging.info(f"Auto-detected Interface: {iface}")
+                     return iface
+        except: pass
+
+        try:
+             # Try /proc/net/wireless first
+             with open("/proc/net/wireless", "r") as f:
+                 for line in f:
+                     if ":" in line:
+                         # Format: " wlan0: ..."
+                         return line.split(":")[0].strip()
+        except: pass
+        
+        # Fallback to standard
+        logging.warning("No wireless interface detected. Defaulting to wlan0.")
+        return "wlan0"
+
+            
+    def _packet_handler(self, pkt):
+        if not self.running: return
+        
+        if pkt.haslayer(RadioTap):
+            # Extract RSSI
+            # RadioTap field 'dBm_AntSignal' is common
+            try:
+                rssi = pkt[RadioTap].dBm_AntSignal
+                # Sometimes it's a byte, sometimes signed int. 
+                # Scapy usually handles decoding, but let's ensure it's reasonable
+                if rssi is None: return
+            except:
+                return
+                
+            # Extract MAC
+            mac = "unknown"
+            ssid = ""
+            if pkt.haslayer(Dot11):
+                mac = pkt[Dot11].addr2 # Source address (Sender)
+                
+            if pkt.haslayer(Dot11Beacon):
+                try:
+                    ssid = pkt[Dot11Beacon].info.decode('utf-8', errors='ignore')
+                except: pass
+                
+            data = {
+                'source': 'scapy_sniff',
+                'timestamp_device_ms': time.time() * 1000,
+                'rssi': int(rssi),
+                'rtt_ms': -1, # RTT not available in passive sniffing
+                'mac_address': mac,
+                'ssid': ssid,
+                'csi_amp': [], 
+                'csi_phase': []
+            }
+            self._emit(data)
+
+    def _channel_hopper(self):
+        """Rotates between common 2.4GHz channels to find traffic."""
+        channels = [1, 6, 11, 2, 7, 12, 3, 8, 13, 4, 9, 5, 10]
+        i = 0
+        while self.running:
+            try:
+                ch = channels[i]
+                subprocess.run(["iw", "dev", self.interface, "set", "channel", str(ch)], 
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                i = (i + 1) % len(channels)
+            except: pass
+            time.sleep(0.5) # Hop every 500ms
+
+    def _run(self):
+        logging.info(f"Starting Scapy Sniffer on {self.interface}...")
+        
+        # Ensure Interface is Up
+        try:
+             subprocess.run(["ip", "link", "set", self.interface, "up"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except: pass
+
+        # Attempt to Enable Monitor Mode (Best Effort)
+        try:
+             # Check if iw exists
+             subprocess.run(["iw", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+             
+             # Try setting monitor mode
+             logging.info(f"Attempting to enable Monitor Mode on {self.interface}...")
+             subprocess.run(["ip", "link", "set", self.interface, "down"], check=True)
+             subprocess.run(["iw", "dev", self.interface, "set", "type", "monitor"], check=True)
+             subprocess.run(["ip", "link", "set", self.interface, "up"], check=True)
+             logging.info("Monitor mode enabled successfully.")
+        except Exception as e:
+             logging.warning(f"Could not set Monitor Mode (optional but recommended): {e}")
+             # Try bringing up anyway
+             try: subprocess.run(["ip", "link", "set", self.interface, "up"])
+             except: pass
+             
+        # Start Channel Hopper
+        self.hopper_thread = threading.Thread(target=self._channel_hopper)
+        self.hopper_thread.daemon = True
+        self.hopper_thread.start()
+
+        try:
+            # monitor=True is handled by kwargs, but interface needs to be in monitor mode os-side mostly.
+            # We assume user (or guide) sets monitor mode if they want all traffic.
+            # But standard managed mode can capture beacons if on valid channel.
+            sniff(iface=self.interface, prn=self._packet_handler, store=False, 
+                  stop_filter=lambda x: not self.running)
+        except OSError as e:
+            if "Network is down" in str(e):
+                logging.error(f"Interface {self.interface} is DOWN.")
+                logging.info("Attempting to bring it UP...")
+                try:
+                     subprocess.check_call(["ip", "link", "set", self.interface, "up"])
+                     logging.info("Interface brought UP. Retrying sniff...")
+                     sniff(iface=self.interface, prn=self._packet_handler, store=False, 
+                           stop_filter=lambda x: not self.running)
+                except Exception as e2:
+                     logging.error(f"Failed to bring interface up: {e2}")
+            else:
+                 logging.error(f"Scapy Sniff failed: {e}")
+        except Exception as e:
+            logging.error(f"Scapy Sniff failed: {e}")
+            logging.error("Ensure you are running with 'sudo' and interface exists.")
+
 
 
 

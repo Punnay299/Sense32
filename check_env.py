@@ -13,8 +13,9 @@ def check_command(cmd):
         return False
 
 def check_python_modules():
-    modules = ["cv2", "mediapipe", "torch", "numpy", "pandas"]
+    modules = ["cv2", "mediapipe", "torch", "numpy", "pandas", "scapy"]
     all_ok = True
+
     for mod in modules:
         try:
             __import__(mod)
@@ -53,10 +54,11 @@ def main():
             with open("/proc/net/wireless", "r") as f:
                 print("[OK] /proc/net/wireless is accessible.")
         except Exception as e:
-            print(f"[WARN] /proc/net/wireless not readable: {e}")
+            print(f"[WARN] /proc/net/wireless not readable: {e} (Scapy mode/iw fallback recommended)")
             
     # Check Python
     if not check_python_modules():
+
         print("\n[FAIL] Missing Python dependencies. Run 'pip install -r requirements.txt'")
         sys.exit(1)
         

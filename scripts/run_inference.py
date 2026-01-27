@@ -9,14 +9,16 @@ import collections
 import logging
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from src.capture.rf_interface import LinuxPollingCapture, MockRFCapture
+from src.capture.rf_interface import LinuxPollingCapture, MockRFCapture, ScapyRFCapture
+
 from src.capture.camera import CameraCapture
 from src.model.networks import WifiPoseModel
 from src.vision.pose import PoseEstimator
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--rf_mode", default="mock", choices=["mock", "linux"])
+    parser.add_argument("--rf_mode", default="mock", choices=["mock", "linux", "scapy"])
+
     parser.add_argument("--model", default="models/best.pth")
     args = parser.parse_args()
     
@@ -41,8 +43,11 @@ def main():
     # Init Sensors
     if args.rf_mode == "linux":
         rf = LinuxPollingCapture()
+    elif args.rf_mode == "scapy":
+        rf = ScapyRFCapture()
     else:
         rf = MockRFCapture()
+
         
     cam = CameraCapture(device_id=0)
     pose_estimator = PoseEstimator() # For ground truth visualization comparison

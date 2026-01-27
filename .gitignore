@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+.venv/
+
+# Project Data (Avoid committing large datasets)
+data/
+models/*.pth
+!models/best.pth  # Optional: Keep best.pth if under 100MB, otherwise ignore
+
+# IDEs
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
+*.log

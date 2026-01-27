@@ -3,71 +3,96 @@
 > **"Seeing Through Walls" with standard Wi-Fi hardware.**
 
 ![Project Status](https://img.shields.io/badge/Status-Operational-brightgreen)
-![Python](https://img.shields.io/badge/Python-3.11-blue)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-orange)
-![MediaPipe](https://img.shields.io/badge/MediaPipe-0.10.9-yellow)
+![Python](https://img.shields.io/badge/Python-3.11.8-blue)
+![PyTorch](https://img.shields.io/badge/PyTorch-With_CUDA-orange)
+![Scapy](https://img.shields.io/badge/Scapy-2.5+-yellow)
 
-## 📖 Overview
+**Wi-Fi Human Detection** is an AI-powered sensing system that transforms a standard Linux laptop into a biological sensor. By capturing and analyzing raw Wi-Fi signal perturbations (RSSI/RTT), it uses a custom Deep Neural Network (CNN-LSTM) to estimate human pose, even through walls.
 
-This project is an **AI-powered Sensing System** that detects human presence and estimates 2D skeletal poses using only **Wi-Fi signals** (RSSI & RTT). It transforms a standard Linux laptop into a biological sensor, capable of detecting motion and posture even through obstacles.
-
-✅ **Privacy-First**: No cameras required for the end-user (inference runs on RF signals only).
-✅ **Hardware-Agnostic**: Works with standard Wi-Fi cards (Intel, Atheros) via standard Linux kernel interfaces.
-✅ **Robust AI**: Uses a custom **CNN-LSTM** Grid Neural Network trained on fusion data.
+This project was developed and tested using **Python 3.11.8** via `pyenv`.
 
 ---
 
-## 🚀 Quick Start
-
-### 1. Installation
-Clone the repo and set up the environment:
-```bash
-# Create Virtual Environment
-python -m venv venv
-source venv/bin/activate
-
-# Install Dependencies
-pip install -r requirements.txt
-```
-
-### 2. Verify Setup
-Ensure you have a supported Wi-Fi interface:
-```bash
-./venv/bin/python check_env.py
-```
-
-### 3. Run the Demo (Inference)
-Launch the real-time visualizer. This will show the camera feed (for verification) overlaid with the stick-figure predicted purely from Wi-Fi data:
-```bash
-./venv/bin/python scripts/run_inference.py --rf_mode linux --model models/best.pth
-```
-*(Note: Press `q` to quit)*
+## 🚀 Features
+*   **Non-Invasive**: No cameras required for the end-user (inference runs on RF signals only).
+*   **Through-Wall Capability**: Detects subjects hidden behind obstacles using high-frequency packet sniffing.
+*   **Privacy-First**: Edge AI execution. No video or data is uploaded to the cloud.
+*   **Hardware-Agnostic**: Works with most standard Wi-Fi cards (Intel, Atheros) via standard Linux kernel interfaces.
+*   **Auto-Tuning**: Automatically handles Monitor Mode switching and Channel Hopping.
 
 ---
 
-## 🛠️ Development Workflow
+## 🛠️ Installation
 
-For researchers and developers wanting to retrain the model:
+1.  **Clone the Repository**
+    ```bash
+    git clone https://github.com/yourusername/wifi-human-detection.git
+    cd wifi-human-detection
+    ```
 
-1.  **Collect Data**: Record yourself walking while the system captures Wi-Fi + Video.
+2.  **Set Up Environment (Use Python 3.11.8)**
     ```bash
-    ./venv/bin/python scripts/collect_data.py --name my_session --duration 60
+    # Ensure you are using Python 3.11.8
+    pyenv local 3.11.8
+    
+    python -m venv venv
+    source venv/bin/activate
+    pip install -r requirements.txt
     ```
-2.  **Label Data**: Use Computer Vision (MediaPipe) to generate "Ground Truth" labels.
+
+3.  **Verify Setup**
     ```bash
-    ./venv/bin/python scripts/process_all_data.py
-    ```
-3.  **Train Model**: Train the Neural Network on your new data (GPU Accelerated).
-    ```bash
-    ./venv/bin/python scripts/train_local.py --all_data --epochs 50
+    python check_env.py
     ```
 
 ---
 
-## 📚 Documentation
+## 📖 Operational Workflow
 
-For a deep dive into the architecture, signal processing logic, and directory structure, please read the **[Comprehensive Project Report](PROJECT_REPORT.md)**.
+Follow these exact commands to run the project.
 
-## 🤝 Contribution
-*   **Issues**: Please check `PROJECT_REPORT.md` for known limitations before filing issues.
-*   **Pull Requests**: Ensure all tests pass (`python -m pytest tests/`) before submitting.
+### 1. Collect Training Data
+**Important**: You must run with `sudo` to access the Wi-Fi card in monitor mode.
+```bash
+# This records RF signals and Video (for ground truth)
+sudo ./venv/bin/python scripts/collect_data.py --name session_01 --rf_mode scapy --duration 60
+```
+
+### 2. Fix Permissions
+Since collection ran as root, you must claim ownership of the data files before processing.
+```bash
+sudo chown -R $USER:$USER data/
+```
+
+### 3. Process Data (Generate Labels)
+Extracts skeletons from the video to create the training dataset.
+```bash
+./venv/bin/python scripts/process_all_data.py
+```
+
+### 4. Train the Model
+Trains the CNN-LSTM network to map RF signals to Pose.
+```bash
+./venv/bin/python scripts/train_local.py --all_data --epochs 100
+```
+
+### 5. Run Live Inference
+Turn off the lights, or walk behind a door. The system will visualize your skeleton based *only* on the Wi-Fi signals.
+```bash
+sudo ./venv/bin/python scripts/run_inference.py --rf_mode scapy
+```
+
+---
+
+## ❓ Troubleshooting
+
+### "Permission Denied" Errors
+If you see permission errors during processing, you likely skipped Step 2. Run `sudo chown -R $USER:$USER data/`.
+
+### Empty RF Data
+The system includes robust verification. If `collect_data.py` exits saying "WARNING: NO RF DATA RECEIVED", check your Wi-Fi interface name or ensure no other monitor processes (like airmon-ng) are conflicting.
+
+---
+
+## 📄 License
+[MIT](https://choosealicense.com/licenses/mit/)

@@ -12,14 +12,16 @@ from datetime import datetime
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.capture.camera import CameraCapture, MockCameraCapture
-from src.capture.rf_interface import MockRFCapture, UDPRFCapture, LinuxPollingCapture
+from src.capture.rf_interface import MockRFCapture, UDPRFCapture, LinuxPollingCapture, ScapyRFCapture
+
 from src.capture.beacon import LabelSyncBeacon
 
 def main():
     parser = argparse.ArgumentParser(description="Collect synchronized RF and Video data.")
     parser.add_argument("--name", type=str, required=True, help="Session name (e.g. 'walk_01')")
     parser.add_argument("--duration", type=int, default=60, help="Duration in seconds")
-    parser.add_argument("--rf_mode", type=str, default="mock", choices=["mock", "udp", "linux"], help="RF Capture mode")
+    parser.add_argument("--rf_mode", type=str, default="mock", choices=["mock", "udp", "linux", "scapy"], help="RF Capture mode")
+
     parser.add_argument("--udp_port", type=int, default=5000, help="UDP Sniffer port")
     parser.add_argument("--cam_id", type=int, default=0, help="Camera Device ID")
     parser.add_argument("--beacon", action="store_true", help="Enable Sync Beacon")
@@ -63,6 +65,9 @@ def main():
         rf = UDPRFCapture(port=args.udp_port)
     elif args.rf_mode == "linux":
         rf = LinuxPollingCapture()
+    elif args.rf_mode == "scapy":
+        rf = ScapyRFCapture()
+
     else:
         # Default fallback
         rf = MockRFCapture()
@@ -97,12 +102,15 @@ def main():
     start_time = time.time()
     frame_idx = 0
     last_frame_ts = 0
+    packet_count = 0
+    check_done = False
 
     try:
         while (time.time() - start_time) < args.duration:
             # 1. Process RF Queue
             while not rf.get_queue().empty():
                 pkt = rf.get_queue().get()
+                packet_count += 1
                 writer_rf.writerow([
                     pkt['timestamp_monotonic_ms'],
                     pkt.get('timestamp_device_ms', 0),
@@ -139,6 +147,17 @@ def main():
                 
             # Aim for ~30FPS loop
             time.sleep(1/30.0)
+
+            # Safety Check: If after 5 seconds we have 0 packets, WARN USER
+            if not check_done and (time.time() - start_time) > 5.0:
+                check_done = True
+                if packet_count == 0:
+                     logging.error("!!!" * 20)
+                     logging.error("WARNING: NO RF DATA RECEIVED IN 5 SECONDS!")
+                     logging.error("Check your interface/permissions. Output csv will be empty.")
+                     logging.error("!!!" * 20)
+                else:
+                     logging.info(f"Verified: Received {packet_count} packets in first 5s. Capture looks good.")
 
     except KeyboardInterrupt:
         logging.info("Interrupted by user.")
