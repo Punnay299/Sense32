@@ -1,98 +1,111 @@
-# Wi-Fi Human Detection & Pose Estimation 📡🚶
+# Wi-Fi & Vision Sensor Fusion for Human Detection
 
-> **"Seeing Through Walls" with standard Wi-Fi hardware.**
+> **Note**: This project implements a Multi-Modal AI system. It does **not** rely solely on basic RSSI triangulation but uses high-dimensional RF feature extraction fused with Computer Vision.
 
-![Project Status](https://img.shields.io/badge/Status-Operational-brightgreen)
-![Python](https://img.shields.io/badge/Python-3.11.8-blue)
-![PyTorch](https://img.shields.io/badge/PyTorch-With_CUDA-orange)
-![Scapy](https://img.shields.io/badge/Scapy-2.5+-yellow)
+## 📌 Project Overview
+This project explores the intersection of **Wireless Sensing** and **Computer Vision**. It uses a standard Wi-Fi Network Interface Card (NIC) to capture raw Radio Frequency (RF) signals (RSSI, RTT, CSI) and trains a Deep Neural Network to estimate human pose and presence. 
 
-**Wi-Fi Human Detection** is an AI-powered sensing system that transforms a standard Linux laptop into a biological sensor. By capturing and analyzing raw Wi-Fi signal perturbations (RSSI/RTT), it uses a custom Deep Neural Network (CNN-LSTM) to estimate human pose, even through walls.
+Crucially, this system uses **MediaPipe Pose** (Vision) as the "Teacher" to train the RF "Student". By synchronizing video and Wi-Fi data, we create a labelled dataset where RF signal patterns are mapped to specific human movements.
 
-This project was developed and tested using **Python 3.11.8** via `pyenv`.
-
----
-
-## 🚀 Features
-*   **Non-Invasive**: No cameras required for the end-user (inference runs on RF signals only).
-*   **Through-Wall Capability**: Detects subjects hidden behind obstacles using high-frequency packet sniffing.
-*   **Privacy-First**: Edge AI execution. No video or data is uploaded to the cloud.
-*   **Hardware-Agnostic**: Works with most standard Wi-Fi cards (Intel, Atheros) via standard Linux kernel interfaces.
-*   **Auto-Tuning**: Automatically handles Monitor Mode switching and Channel Hopping.
+### Key Features
+*   **Sensor Fusion (Kalman Filter)**: Combines the precision of Vision with the occlusion-resistance of RF.
+*   **Deep Learning on RF**: Uses 1D Convolutional Neural Networks (CNNs) and Recurrent Neural Networks (GRUs/LSTMs) to decode complex signal distortions.
+*   **Line-of-Sight Training**: Requires a camera to generate initial Ground Truth labels.
+*   **Passive & Active Modes**: Supports both Passive Sniffing (Scapy) and Active Polling (Linux/Ping) for RF data collection.
 
 ---
 
-## 🛠️ Installation
+## 🏗 System Architecture
 
-1.  **Clone the Repository**
-    ```bash
-    git clone https://github.com/yourusername/wifi-human-detection.git
-    cd wifi-human-detection
-    ```
+The system operates in two main phases: **Training** and **Inference**.
 
-2.  **Set Up Environment (Use Python 3.11.8)**
-    ```bash
-    # Ensure you are using Python 3.11.8
-    pyenv local 3.11.8
-    
-    python -m venv venv
-    source venv/bin/activate
-    pip install -r requirements.txt
-    ```
+### 1. Training Phase (Teacher-Student)
+In this phase, we capture data to teach the AI model what "Human Presence" looks like in the RF spectrum.
 
-3.  **Verify Setup**
-    ```bash
-    python check_env.py
-    ```
+*   **Teacher (Vision)**: A Camera records the subject. `MediaPipe` extracts a 33-point skeletal wireframe. This is the **Ground Truth**.
+*   **Student (RF)**: The Wi-Fi card captures packet signal strength (RSSI) and timing (RTT) at high frequency.
+*   **Learning**: The Model (`WifiPoseModel`) is trained to predict the Skeleton coordinates solely from the RF data.
+
+### 2. Inference Phase (Fusion)
+In the live demo, we run both sensors.
+*   If the Camera sees the person, the system uses Vision (High Confidence).
+*   If the Person walks behind an object (visual occlusion), the system falls back to the trained RF Model to estimate position.
+*   A **Kalman Filter** smooths the transition between these two states to prevent jitter.
 
 ---
 
-## 📖 Operational Workflow
+## 🚀 Getting Started
 
-Follow these exact commands to run the project.
+### Prerequisites
+*   **Hardware**: 
+    *   Linux Laptop/Pi with Wi-Fi Card (Monitor mode preferred but not required).
+    *   USB Webcam.
+*   **Software**:
+    *   Python 3.8+
+    *   PyTorch (CPU or CUDA)
+    *   OpenCV, MediaPipe, Scapy, Pandas
 
-### 1. Collect Training Data
-**Important**: You must run with `sudo` to access the Wi-Fi card in monitor mode.
+### Installation
 ```bash
-# This records RF signals and Video (for ground truth)
-sudo ./venv/bin/python scripts/collect_data.py --name session_01 --rf_mode scapy --duration 60
+# Clone the repository
+git clone https://github.com/yourusername/wifi-object-detection.git
+cd wifi-object-detection
+
+# Install dependencies
+pip install -r requirements.txt
+
+# (Optional) Enable Monitor Mode for better RF data
+# sudo iw dev wlan0 set type monitor
 ```
 
-### 2. Fix Permissions
-Since collection ran as root, you must claim ownership of the data files before processing.
+---
+
+## 📖 Usage Guide
+
+### 1. Check Hardware
+Verify your camera and Wi-Fi interface are detected.
 ```bash
-sudo chown -R $USER:$USER data/
+python scripts/check_hardware.py
 ```
 
-### 3. Process Data (Generate Labels)
-Extracts skeletons from the video to create the training dataset.
+### 2. Collect Data
+Record a session. Walk in front of the camera while the RF captures data.
 ```bash
-./venv/bin/python scripts/process_all_data.py
+# --rf_mode options: mock (test), linux (active ping), scapy (passive sniff)
+python scripts/collect_data.py --name session_01 --duration 60 --rf_mode linux
 ```
 
-### 4. Train the Model
-Trains the CNN-LSTM network to map RF signals to Pose.
+### 3. Generate Labels
+Process the video to generate the "Answer Key" for the AI.
 ```bash
-./venv/bin/python scripts/train_local.py --all_data --epochs 100
+# Extracts skeletal pose from video.mp4 -> labels.csv
+python scripts/process_all_data.py
+```
+
+### 4. Train Model
+Train the Neural Network to predict Pose from RF.
+```bash
+python scripts/train_local.py --all_data --epochs 50
 ```
 
 ### 5. Run Live Inference
-Turn off the lights, or walk behind a door. The system will visualize your skeleton based *only* on the Wi-Fi signals.
+See the Fusion Engine in action.
 ```bash
-sudo ./venv/bin/python scripts/run_inference.py --rf_mode scapy
+python scripts/run_inference.py --rf_mode linux
 ```
 
 ---
 
-## ❓ Troubleshooting
+## 📂 File Structure
+*   `src/capture`: Drivers for Camera and Wi-Fi cards.
+*   `src/vision`: MediaPipe wrappers for ground truth generation.
+*   `src/model`: PyTorch definitions (CNN/LSTM) for the RF model.
+*   `src/engine`: Kalman Filter logic for sensor fusion.
 
-### "Permission Denied" Errors
-If you see permission errors during processing, you likely skipped Step 2. Run `sudo chown -R $USER:$USER data/`.
+## ⚠️ Limitations
+*   **Environment Specific**: RF multipath effects are heavily dependent on the room layout. A model trained in Room A may specific retraining for Room B.
+*   **Line-of-Sight Training**: You must be visible to the camera during the *training* phase to generate labels.
+*   **Single Subject**: The current logic is optimized for tracking one primary subject.
 
-### Empty RF Data
-The system includes robust verification. If `collect_data.py` exits saying "WARNING: NO RF DATA RECEIVED", check your Wi-Fi interface name or ensure no other monitor processes (like airmon-ng) are conflicting.
-
----
-
-## 📄 License
-[MIT](https://choosealicense.com/licenses/mit/)
+## 📄 Technical Report
+For a deep dive into the code, algorithms, and function-level documentation, please refer to [TECHNICAL_REPORT.md](TECHNICAL_REPORT.md).
