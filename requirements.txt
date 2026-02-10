@@ -1,0 +1,27 @@
+# Core ML & Data
+numpy>=1.26.0
+pandas>=2.1.0
+scipy>=1.11.0
+dataset>=1.6.0  # If used, otherwise stick to standard libraries
+
+# Deep Learning (CPU/CUDA auto-detection will handle specific torch version usually, 
+# but pip install torch will grab latest stable)
+torch>=2.2.0
+torchvision>=0.17.0
+
+# Computer Vision
+opencv-python>=4.9.0
+mediapipe>=0.10.9
+protobuf>=3.20.3,<4.24.0  # MediaPipe often requires <4.x
+
+# Networking & Packet Capture
+scapy>=2.5.0
+
+# Visualization & Utils
+matplotlib>=3.8.0
+tqdm>=4.66.0
+
+# Testing & Quality
+pytest>=8.0.0
+pylint>=3.0.0
+mypy>=1.8.0
