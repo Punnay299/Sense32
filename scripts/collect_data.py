@@ -29,6 +29,7 @@ def main():
     parser.add_argument("--beacon", action="store_true", help="Enable Sync Beacon")
     parser.add_argument("--headless", action="store_true", help="Run without UI")
     parser.add_argument("--mock_cam", action="store_true", help="Use Mock Camera")
+    parser.add_argument("--start_delay", type=int, default=0, help="Delay in seconds before recording starts")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -104,6 +105,10 @@ def main():
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     video_path = os.path.join(session_dir, "video.mp4")
     out_video = cv2.VideoWriter(video_path, fourcc, 30.0, (w, h))
+
+    if args.start_delay > 0:
+        logging.info(f"Waiting {args.start_delay} seconds before starting...")
+        time.sleep(args.start_delay)
 
     logging.info("Recording started. Press Ctrl+C to stop early.")
     start_time = time.time()

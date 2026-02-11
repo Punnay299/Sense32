@@ -10,7 +10,6 @@ class CSICapture(RFInterface):
     Captures CSI data from ESP32 via UDP.
     PROTOCOL:
     [Header: 3 bytes "CSI"]
-    [RSSI: 1 byte (int8)]
     [Timestamp: 4 bytes (uint32)]
     [Len: 2 bytes (uint16)]
     [Payload: Len bytes] relative to ESP32 data format
@@ -50,7 +49,7 @@ class CSICapture(RFInterface):
                     data, addr = self.sock.recvfrom(4096)
                     # logging.debug(f"DEBUG: Pkt {len(data)} from {addr}")  
                     
-                    if len(data) < 10: 
+                    if len(data) < 9: 
                         logging.warning(f"Short packet: {len(data)}")
                         continue
 
@@ -58,19 +57,21 @@ class CSICapture(RFInterface):
                     if data[0:3] != b'CSI': 
                         logging.warning(f"Invalid Header: {data[0:3]}")
                         continue
+                        
+                    # print(f"DEBUG: Pkt from {addr[0]}") # UNCOMMENT TO DEBUG SOURCES
                     
                     try:
-                        rssi = struct.unpack('b', data[3:4])[0]
-                        ts_device = struct.unpack('<I', data[4:8])[0]
-                        data_len = struct.unpack('<H', data[8:10])[0]
+                        # RSSI Removed. Format: CSI(3) + Time(4) + Len(2)
+                        ts_device = struct.unpack('<I', data[3:7])[0]
+                        data_len = struct.unpack('<H', data[7:9])[0]
                         
-                        # logging.info(f"DEBUG: RSSI {rssi} Len {data_len}")
+                        # logging.info(f"DEBUG: Len {data_len}")
                         
-                        if len(data) < 10 + data_len:
-                            logging.warning(f"Incomplete packet from {addr}: needed {10+data_len}, got {len(data)}")
+                        if len(data) < 9 + data_len:
+                            logging.warning(f"Incomplete packet from {addr}: needed {9+data_len}, got {len(data)}")
                             continue
                             
-                        raw_payload = data[10:10+data_len]
+                        raw_payload = data[9:9+data_len]
                         
                         complex_data = np.frombuffer(raw_payload, dtype=np.int8)
                         
@@ -84,11 +85,10 @@ class CSICapture(RFInterface):
                         csi_phase = np.arctan2(imag.astype(np.float32), real.astype(np.float32)).tolist()
                         
                         pkt = {
-                            'source': f"esp32_{addr[0]}",
+                            'source': f"esp32_{addr[0]}", # Unique IP based source
                             'timestamp_device_ms': ts_device,
                             'timestamp_monotonic_ms': time.monotonic() * 1000,
-                            'rssi': int(rssi),
-                            'mac_address': 'esp32_captured',
+                            'mac_address': f'{addr[0]}', # Use IP as ID for now
                             'csi_amp': csi_amp,
                             'csi_phase': csi_phase
                         }

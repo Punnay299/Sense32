@@ -68,9 +68,10 @@ def main():
                 ts_ms = int((frame_idx / fps) * 1000)
             
             # Blind Labeling Logic (NLOS)
-            # If "room2" or "hallway", we assume the user IS present but camera can't see them.
-            # We force visible=True, but leave keypoints empty (zeros).
-            is_nlos = "room2" in args.session.lower() or "hallway" in args.session.lower()
+            # If "room2", "room_a", "room_b" - assume user is present but hidden.
+            # "hallway" - assume present but might be partially hidden? Actually "hallway" often implies vision.
+            # But earlier logic had "hallway" in nlos. Let's keep it safe.
+            is_nlos = any(x in args.session.lower() for x in ["room2", "room_a", "room_b", "room1"])
             
             if is_nlos:
                  # Force Presence

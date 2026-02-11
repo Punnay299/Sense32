@@ -1,19 +1,14 @@
 import socket
-import time
+import sys
 
-def debug_udp():
-    IP = "0.0.0.0"
-    PORT = 8888
-    
-    print(f"Listening on {IP}:{PORT}...")
-    
+def listen_udp(ip, port):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    
+    # Bind to 0.0.0.0 to listen on all interfaces
     try:
-        sock.bind((IP, PORT))
+        sock.bind(('0.0.0.0', port))
+        print(f"Listening on 0.0.0.0:{port}...")
     except Exception as e:
-        print(f"ERROR BINDING: {e}")
+        print(f"Error binding: {e}")
         return
 
     count = 0
@@ -21,18 +16,13 @@ def debug_udp():
         try:
             data, addr = sock.recvfrom(4096)
             count += 1
-            print(f"[{count}] Received {len(data)} bytes from {addr}")
-            print(f"    Header: {data[0:3]}  (Expected: b'CSI')")
-            
-            if count >= 5:
-                print("Success! Packets are reaching Python.")
-                break
+            if count % 10 == 0:
+                print(f"Received {count} packets. Last from {addr}, len={len(data)}")
         except KeyboardInterrupt:
             break
         except Exception as e:
             print(f"Error: {e}")
 
-    sock.close()
-
 if __name__ == "__main__":
-    debug_udp()
+    port = 8888 # Default port
+    listen_udp('0.0.0.0', port)

@@ -6,20 +6,25 @@ import os
 import ast
 import json
 import logging
+import sys
+
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+from src.utils.normalization import AdaptiveScaler
 
 class RFDataset(Dataset):
-    def __init__(self, session_paths, seq_len=50, augment=False):
+    def __init__(self, session_paths, seq_len=50, augment=False, scaler=None):
         """
-        :param session_paths: List of paths to session folders (e.g. ['data/session_north_1', ...])
-        :param seq_len: Number of RF packets to feed as input (Time Step)
-        :param augment: boolean, whether to apply data augmentation (noise, dropout)
+        :param session_paths: List of paths to session folders
+        :param seq_len: Time steps
+        :param augment: Data augmentation flag
+        :param scaler: Pre-fitted AdaptiveScaler (optional). If None, will fit on loaded data.
         """
         self.seq_len = seq_len
         self.augment = augment
         self.samples = [] 
         
-        # We pre-load data into memory for speed (assuming fit in RAM). 
-        # For huge datasets, we'd index file offsets.
+        # We pre-load data into memory for speed 
         self.sessions_data = [] # List of {'rf_feats': np.array, 'rf_times': np.array}
         self.valid_indices = [] # List of (session_idx, rf_end_idx, label_dict)
         
@@ -27,6 +32,27 @@ class RFDataset(Dataset):
             self._load_session(s_idx, p)
             
         logging.info(f"RFDataset: Loaded {len(self.valid_indices)} samples from {len(session_paths)} sessions.")
+        
+        # Fit or Use Scaler
+        if scaler:
+            self.scaler = scaler
+            logging.info("RFDataset: Using provided scaler.")
+        else:
+            self.scaler = AdaptiveScaler()
+            # Collect all RF data to fit
+            all_rf = []
+            for s in self.sessions_data:
+                all_rf.append(s['rf_feats'])
+            
+            if len(all_rf) > 0:
+                full_stack = np.concatenate(all_rf, axis=0)
+                self.scaler.fit(full_stack)
+            else:
+                logging.warning("RFDataset: No data to fit scaler!")
+                
+        # Transform all loaded data immediately to save time during training
+        for s in self.sessions_data:
+             s['rf_feats'] = self.scaler.transform(s['rf_feats'])
 
     def _load_session(self, s_idx, path):
         rf_path = os.path.join(path, "rf_data.csv")
@@ -75,26 +101,21 @@ class RFDataset(Dataset):
                         rf_feats.append([0]*64)
                 
                 rf_feats = np.array(rf_feats, dtype=np.float32)
-                # Normalize CSI (0-1 approx)
-                rf_feats = rf_feats / 127.0
-                rf_feats = np.clip(rf_feats, 0, 1)
+                # Normalization is now handled by AdaptiveScaler in __init__
+                # rf_feats = rf_feats / 127.0
+                # rf_feats = np.clip(rf_feats, 0, 1)
                 
             else:
-                # Fallback to RSSI + RTT (2 dims) -> Pad to 64 or handle in model
-                # Ideally model should handle 64. We can zero-pad.
-                rssi = rf_df["rssi"].fillna(-100).values.astype(np.float32)
-                rtt = rf_df.get("rtt_ms", pd.Series([0]*len(rf_df))).fillna(0).values.astype(np.float32)
-                
-                # Norm
-                rssi = (rssi + 100) / 100.0 # 0-1
-                rtt = np.clip(rtt, 0, 1000) / 1000.0
-                
-                # Stack
-                feats_2d = np.stack([rssi, rtt], axis=1) # [T, 2]
-                
-                # Pad to 64 columns
-                padding = np.zeros((len(feats_2d), 62), dtype=np.float32)
-                rf_feats = np.concatenate([feats_2d, padding], axis=1)
+                # RSSI Fallback Removed as per user request for Robustness.
+                # We strictly require CSI data.
+                logging.warning(f"Skipping part of {path}: No CSI data found (RSSI ignored).")
+                # rf_feats remains empty or filled with zeros if we want to support partial? 
+                # Better to just not append anything if individual packets are missing?
+                # But here we are iterating per-packet? 
+                # No, `rf_feats` is per-session.
+                # If `has_csi` is False, the loop above `if has_csi:` didn't run. 
+                # `rf_feats` is empty.
+                pass
             
             rf_times = rf_df["timestamp_monotonic_ms"].values
             
@@ -130,9 +151,9 @@ class RFDataset(Dataset):
             folder_name = os.path.basename(path).lower()
             loc_label = 0 # Default/Room 1
             
-            if "room1" in folder_name: 
+            if "room1" in folder_name or "room_a" in folder_name: 
                 loc_label = 0
-            elif "room2" in folder_name: 
+            elif "room2" in folder_name or "room_b" in folder_name: 
                 loc_label = 1
             elif "hallway" in folder_name: 
                 loc_label = 2
@@ -217,19 +238,34 @@ class RFDataset(Dataset):
         rf_window = session['rf_feats'][rf_end_idx-self.seq_len : rf_end_idx] # [Seq, 64]
         
         # Augmentation
+        # Augmentation (Robustness)
         if self.augment:
-            # Gaussian Noise
+            # 1. Amplitude Scaling (Simulate different signal strengths/distances)
+            if np.random.rand() < 0.5:
+                scale_factor = np.random.uniform(0.8, 1.2)
+                rf_window = rf_window * scale_factor
+                
+            # 2. Gaussian Noise (Simulate RF interference)
             if np.random.rand() < 0.5:
                 noise = np.random.normal(0, 0.05, rf_window.shape).astype(np.float32)
                 rf_window = rf_window + noise
-            
-            # Random Dropout (simulate packet loss)
+
+            # 3. Time Shift (Circular roll) - Simulate synchronization jitter
+            if np.random.rand() < 0.3:
+                shift = np.random.randint(-5, 5)
+                rf_window = np.roll(rf_window, shift, axis=0)
+
+            # 4. Random Dropout (Packet loss simulation)
             if np.random.rand() < 0.3:
                 mask = np.random.rand(self.seq_len, 1) > 0.1 # 10% dropout
                 rf_window = rf_window * mask
+            
+            # Clip again to ensure stability after augmentation
+            rf_window = np.clip(rf_window, 0, 1)
                 
         # To Torch
-        rf_tensor = torch.from_numpy(rf_window) # [Seq, 64]
+        # Ensure FLOAT32 (Fix for RuntimeError: Input type (double) and bias type (float))
+        rf_tensor = torch.from_numpy(rf_window.astype(np.float32)) # [Seq, 64]
         # Transpose for 1D CNN: [Channels, Seq]
         rf_tensor = rf_tensor.permute(1, 0)
         

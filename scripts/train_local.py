@@ -154,36 +154,47 @@ def main():
         
     logging.info(f"Found {len(sessions)} sessions.")
     
-    # 2. Create Dataset
-    # We want to split sessions into train/val? Or split frames?
-    # Random split of frames is easier but might leak data if frames are correlated.
-    # But for now let's stick to random split of frames for simplicity, as implemented before.
-    # To implement augmentation correctly, we should have two datasets: one with augment=True, one False.
-    # But we can't easily split indices and then change the flag.
-    # Solution: Create one dataset without augmentation (or with) and split.
-    # Or: Create two datasets with same paths, and use Subset with indices.
+    # 2. Create Dataset & Scaler
+    # Step A: Load base dataset to fit Scaler
+    logging.info("Initializing Base Dataset to fit Scaler...")
+    base_dataset = RFDataset(sessions, augment=False, scaler=None) 
     
-    full_dataset = RFDataset(sessions, augment=False) 
-    
-    if len(full_dataset) == 0:
+    if len(base_dataset) == 0:
         logging.error("No valid samples found in dataset.")
         return
+
+    # Step B: Save Scaler
+    os.makedirs("models", exist_ok=True)
+    base_dataset.scaler.save("models/scaler.json")
     
-    # Split
-    total_len = len(full_dataset)
+    # Step C: Split Indices
+    total_len = len(base_dataset)
     train_len = int(0.8 * total_len)
     val_len = total_len - train_len
-    train_subset, val_subset = random_split(full_dataset, [train_len, val_len])
     
-    # Hack to enable augmentation only on train_subset
-    # The Subset class wraps the original dataset. We can't change the original dataset's flag easily for just one subset.
-    # A cleaner way is to just enable it for all or none, or create a wrapper.
-    # For now, let's enable it for ALL, or NONE. 
-    # Let's enable it for ALL (including validation) which is suboptimal but simple,
-    # OR we re-initialize dataset.
-    # Better: Update RFDataset to take indices? No.
-    # Let's just turn it on. Validation score might be slightly noisy but robust.
-    full_dataset.augment = True 
+    # We use random_split to get indices, but we want separate Dataset objects for Augmentation
+    # A bit naive to reload data, but ensures clean separation of augment flag.
+    # Optimization: RFDataset stores data in RAM. If we create two new ones, we triple RAM usage.
+    # Better: Share the `sessions_data`? 
+    # RFDataset doesn't support passing pre-loaded data easily without refactor.
+    # Given the user has 32GB+ RAM (Gaming Laptop), re-loading is acceptable for safety.
+    
+    # Generate random indices
+    indices = torch.randperm(total_len).tolist()
+    train_indices = indices[:train_len]
+    val_indices = indices[train_len:]
+    
+    from torch.utils.data import Subset
+    
+    # Train Set: Augment = True, Scaler = Shared
+    logging.info("Reloading Training Set (Augment=True)...")
+    train_ds_raw = RFDataset(sessions, augment=True, scaler=base_dataset.scaler)
+    train_subset = Subset(train_ds_raw, train_indices)
+    
+    # Val Set: Augment = False, Scaler = Shared
+    logging.info("Reloading Validation Set (Augment=False)...")
+    val_ds_raw = RFDataset(sessions, augment=False, scaler=base_dataset.scaler)
+    val_subset = Subset(val_ds_raw, val_indices)
     
     logging.info(f"Total Samples: {total_len} (Train: {train_len}, Val: {val_len})")
     

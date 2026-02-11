@@ -75,20 +75,24 @@ class MockRFCapture(RFInterface):
             now = time.time()
             elapsed = now - t0
             
-            # Base RSSI around -60dBm, varying between -40 and -80
+            # Base CSI Amplitude around 10, varying between 5 and 30
             # Period of 10 seconds for a "pass"
-            raw_rssi = -60 + 20 * math.sin(elapsed * 2 * math.pi / 10.0)
+            # raw_amp = 10 + 10 * math.sin(elapsed * 2 * math.pi / 10.0)
             
             # Add noise
-            noisy_rssi = raw_rssi + random.uniform(-5, 5)
+            # noisy_amp = raw_amp + random.uniform(-2, 2)
+            
+            # Mock 64 subcarriers (Sine wave pattern across subcarriers)
+            # shape (64,)
+            csi_data = [10 + 10 * math.sin(i * 0.1 + elapsed) for i in range(64)]
             
             data = {
                 'source': 'mock_gen',
                 'timestamp_device_ms': now * 1000,
                 'mac_address': '00:11:22:33:44:55',
-                'rssi': int(noisy_rssi),
-                'csi_amp': [], # CSI not simulated in simple mock yet
-                'csi_phase': []
+                # 'rssi': REMOVED
+                'csi_amp': csi_data, 
+                'csi_phase': [0]*64
             }
             self._emit(data)
             time.sleep(0.05) # 20Hz

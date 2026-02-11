@@ -2,13 +2,15 @@
 #include <WiFiUdp.h>
 #include "esp_wifi.h"
 
-// ================= COFIGURATION =================
-#define WIFI_SSID "CSI_NET"
-#define WIFI_PASS "1234567890"
-#define TARGET_IP "10.42.0.1"
- // Laptop IP (AP Gateway usually)
-#define TARGET_PORT 8888
-// ================================================
+// ---------------------------------------------------------------------------------
+// CONFIGURATION
+// ---------------------------------------------------------------------------------
+#define WIFI_SSID "CSI_NET"       // <--- SET YOUR WIFI CREDENTIALS HERE
+#define WIFI_PASS "1234567890"    // <--- SET YOUR WIFI CREDENTIALS HERE
+// #define TARGET_IP "255.255.255.255" // REMOVED: Using dynamic Gateway IP
+#define TARGET_PORT 8888          // Default port for our Python script
+IPAddress target_ip;
+
 
 WiFiUDP udp;
 // Buffer for CSI data to send via UDP
@@ -25,30 +27,28 @@ void _csi_cb(void *ctx, wifi_csi_info_t *data) {
     if (len > 4096) return; // Safety check for buffer
     
     // Construct Packet
-    // [Header: "CSI" (3), Seq (4), RSSI (1), Len (2)] + [Payload]
-    // RSSI is in d->rx_ctrl.rssi
+    // [Header: "CSI" (3), Seq (4), Len (2)] + [Payload]
+    // RSSI REMOVED as per requirements
     
-    int8_t rssi = d->rx_ctrl.rssi;
     uint32_t timestamp = millis();
     
     // Packet Structure (Custom binary protocol for speed)
     // 0-2: "CSI"
-    // 3: RSSI (signed int8 cast to uint8)
-    // 4-7: Timestamp
-    // 8-9: Data Length (uint16)
-    // 10...: Raw CSI Data (int8 arrays of imag/real)
+    // 3-6: Timestamp
+    // 7-8: Data Length (uint16)
+    // 9...: Raw CSI Data (int8 arrays of imag/real)
     
     buffer[0] = 'C'; buffer[1] = 'S'; buffer[2] = 'I';
-    buffer[3] = (uint8_t)rssi;
-    memcpy(&buffer[4], &timestamp, 4);
+    memcpy(&buffer[3], &timestamp, 4);
     uint16_t data_len = (uint16_t)len;
-    memcpy(&buffer[8], &data_len, 2);
+    memcpy(&buffer[7], &data_len, 2);
     
     if (d->buf != NULL) {
-        memcpy(&buffer[10], d->buf, len);
+        memcpy(&buffer[9], d->buf, len);
         // Send UDP
-        udp.beginPacket(TARGET_IP, TARGET_PORT);
-        udp.write(buffer, 10 + len);
+        // Use the global target IP set in setup()
+        udp.beginPacket(target_ip, TARGET_PORT);
+        udp.write(buffer, 9 + len);
         udp.endPacket();
     }
 }
@@ -72,6 +72,12 @@ void setup() {
     Serial.println("WiFi connected");
     Serial.print("IP address: ");
     Serial.println(WiFi.localIP());
+
+    // AUTOMATIC GATEWAY DETECTION (For Hotspot/Direct Connection)
+    target_ip = WiFi.gatewayIP();
+    Serial.print("Target IP (Gateway): ");
+    Serial.println(target_ip);
+
 
     // 2. Configure CSI
     ESP_ERROR_CHECK(esp_wifi_set_csi_rx_cb(_csi_cb, NULL));

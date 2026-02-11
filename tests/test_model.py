@@ -23,22 +23,20 @@ class TestModel(unittest.TestCase):
         if not TORCH_AVAILABLE:
             self.skipTest("PyTorch not installed")
     def test_model_structure(self):
-        # Input: Batch=2, Seq=50, Feat=2
-        input_tensor = torch.randn(2, 50, 2)
+        # Input: Batch=2, Seq=50, Feat=128 (Dual Node)
+        input_tensor = torch.randn(2, 50, 128)
         
-        model = WifiPoseModel(input_features=2)
+        model = WifiPoseModel(input_features=128, output_points=33)
         
         # Test default forward
-        pose, presence = model(input_tensor)
+        pose, presence, location = model(input_tensor)
         
         # Check shapes
-        # Pose should be (2, 34) by default based on code (17 points * 2)
-        # Wait, in networks.py I defined PoseRegressor output as output_points * 2 (17*2=34)
-        # But in train_local.py I redefined the head to 66 (33*2).
-        # Let's test the default definition first.
-        
-        self.assertEqual(pose.shape, (2, 34))
+        # Pose should be (2, 66) (33 points * 2)
+        self.assertEqual(pose.shape, (2, 66))
         self.assertEqual(presence.shape, (2, 1))
+        self.assertEqual(location.shape, (2, 4)) # 4 Classes
+
         
         # Check presence range [0, 1]
         self.assertTrue(torch.all(presence >= 0))
@@ -55,10 +53,10 @@ class TestModel(unittest.TestCase):
         # LSTM input (B, L, 64) -> output (B, L, Hidden) -> Last hidden state
         # So yes, it should work with any length L.
         
-        input_tensor = torch.randn(1, 100, 2)
-        model = WifiPoseModel(input_features=2)
-        pose, _ = model(input_tensor)
-        self.assertEqual(pose.shape, (1, 34))
+        input_tensor = torch.randn(1, 100, 128)
+        model = WifiPoseModel(input_features=128, output_points=33)
+        pose, _, _ = model(input_tensor)
+        self.assertEqual(pose.shape, (1, 66))
 
 if __name__ == '__main__':
     unittest.main()

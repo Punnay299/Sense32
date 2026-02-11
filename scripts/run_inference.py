@@ -2,273 +2,249 @@ import argparse
 import os
 import sys
 import time
-
+import collections
+import logging
 import cv2
 import torch
 import numpy as np
-import collections
-import logging
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.capture.rf_interface import LinuxPollingCapture, MockRFCapture, ScapyRFCapture
-
 from src.capture.camera import CameraCapture
 from src.model.networks import WifiPoseModel
 from src.vision.pose import PoseEstimator
+from src.utils.normalization import AdaptiveScaler
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--rf_mode", default="mock", choices=["mock", "linux", "scapy", "esp32"])
-
+    parser.add_argument("--rf_mode", default="esp32", choices=["mock", "linux", "scapy", "esp32"])
     parser.add_argument("--model", default="models/best.pth")
     parser.add_argument("--port", type=int, default=8888, help="UDP Port for ESP32 CSI")
     parser.add_argument("--ip", type=str, default="0.0.0.0", help="UDP IP to bind to")
     args = parser.parse_args()
     
-    logging.basicConfig(level=logging.INFO)
-    
-    # Device configuration
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f"Using device: {device}")
 
-    # Load Model (Input=2 features, Output=66 (33*2))
-    # Match training: output_points=33
-    # Neural Network (Trained on 64 features)
-    model = WifiPoseModel(input_features=64, output_points=33).to(device)
-    
+    # 1. Load Model (Dual Node = 128 Features)
+    model = WifiPoseModel(input_features=128, output_points=33).to(device)
     if os.path.exists(args.model):
-        model.load_state_dict(torch.load(args.model, map_location=device))
-        logging.info("Model loaded.")
+        try:
+            model.load_state_dict(torch.load(args.model, map_location=device))
+            logging.info("Model loaded.")
+        except:
+             logging.warning("Model mismatch (likely old 64-feat model). using random weights for now.")
     else:
         logging.warning("Model not found, using random weights.")
-    
     model.eval()
     
-    # Init Sensors
-    if args.rf_mode == "linux":
-        rf = LinuxPollingCapture()
-        input_feats = 2
-    elif args.rf_mode == "scapy":
-        rf = ScapyRFCapture()
-        input_feats = 2
-    elif args.rf_mode == "esp32":
+    # 2. Load Scaler
+    scaler = AdaptiveScaler()
+    scaler_path = "models/scaler.json"
+    if os.path.exists(scaler_path):
+        scaler.load(scaler_path)
+    else:
+        logging.warning("Scaler not found! Using uncalibrated data.")
+
+    # 3. Init Sensors
+    if args.rf_mode == "esp32":
         from src.capture.csi_capture import CSICapture
         rf = CSICapture(port=args.port, ip=args.ip)
-        input_feats = 64
     else:
-        rf = MockRFCapture() # Mock needs update to send 64 feats if needed, or we adapt
-        # For now, let's assume mock sends 2 feats and we pad, or we update mock.
-        # Let's auto-pad in loop.
-        input_feats = 64 # Model expects 64
+        rf = MockRFCapture()
 
-        
     cam = CameraCapture(device_id=0)
-    
+    pose_estimator = PoseEstimator() # Helper for "Hallway" logic
+
     rf.start()
     cam.start()
-    
-    # Buffer for RF data (Seq Len = 50)
-    rf_buffer = collections.deque(maxlen=50)
-    
-    locked_source = None
-    if args.rf_mode == "esp32" and args.ip != "0.0.0.0":
-         # If user specified IP, lock to it immediately if desired? No, let's auto-lock.
-         pass
-    
-    # FPS Calculation
-    prev_time = time.time()
-    frame_count = 0
-    fps = 0
 
-    logging.info("Starting Inference Loop...")
+    # 4. State Management (Dual Node)
+    nodes = {} # Map 'IP' -> 'NodeID' (A or B)
+    node_buffers = {
+        'A': collections.deque(maxlen=50),
+        'B': collections.deque(maxlen=50)
+    }
+    node_variance = {'A': 0.0, 'B': 0.0}
+    
+    fps = 0
+    frame_count = 0
+    prev_time = time.time()
+    
+    logging.info("Waiting for Dual-Node Traffic...")
+
     try:
         while True:
-            # 1. Update RF Buffer (Limit specific number of packets per frame to avoid freezing)
-            packets_processed = 0
-            # Logic: Collect packets, sort by timestamp
+            # --- RF Processing ---
             while not rf.get_queue().empty():
                 pkt = rf.get_queue().get()
+                src = pkt['source']
                 
-                # Auto-Lock Logic: Lock onto the first valid source
-                if locked_source is None:
-                     locked_source = pkt['source']
-                     logging.info(f" locked_source set to: {locked_source}")
-                     print(f">> LOCKED ONTO SOURCE: {locked_source}")
+                # Auto-Assign Nodes
+                if src not in nodes:
+                    if len(nodes) == 0:
+                        nodes[src] = 'A'
+                        logging.info(f"Node A Detected: {src}")
+                    elif len(nodes) == 1:
+                        nodes[src] = 'B'
+                        logging.info(f"Node B Detected: {src}")
+                    else:
+                        # Ignore 3rd node?
+                        continue
                 
-                # Filter unknown sources
-                if pkt['source'] != locked_source:
-                     continue
+                node_id = nodes[src]
                 
-                # Check for CSI
-                if 'csi_amp' in pkt and len(pkt['csi_amp']) > 0:
-                     raw_csi = np.array(pkt['csi_amp'], dtype=np.float32)
-                     packets_processed += 1   
-                     # Debug Stats (Once per sec roughly)
-                     if packets_processed == 1 and frame_count % 30 == 0:
-                         logging.info(f"CSI Stats: Min={np.min(raw_csi):.1f}, Max={np.max(raw_csi):.1f}, Mean={np.mean(raw_csi):.1f}")
+                if 'csi_amp' in pkt and len(pkt['csi_amp']) >= 64:
+                    raw_csi = np.array(pkt['csi_amp'][:64], dtype=np.float32)
+                    
+                    # Store Raw Variance (for Logic Rules)
+                    # Simple variance of amplitude across subcarriers (or over time?)
+                    # Over time is better, but instant variance across subcarriers also indicates multipath complexity.
+                    # Let's use simple mean amplitude as a proxy for "Activity" or Variance of buffer later.
+                    
+                    # Normalize
+                    csi_in = raw_csi.reshape(1, -1)
+                    try:
+                        csi_out = scaler.transform(csi_in)
+                        csi = csi_out[0]
+                    except:
+                        csi = raw_csi / 127.0
+                    
+                    node_buffers[node_id].append(csi)
 
-                     # Robust Normalization (Match Training Data!)
-                     # Training uses: x / 127.0 -> clip(0, 1)
-                     # OLD (Broken): Z-Score
-                     csi = raw_csi / 127.0
-                     csi = np.clip(csi, 0, 1)
-                         
-                     # Resize to 64 if needed
-                     if len(csi) < 64:
-                         csi = np.pad(csi, (0, 64-len(csi)))
-                     elif len(csi) > 64:
-                         csi = csi[:64]
-                     rf_buffer.append(csi)
-                else:
-                    # Fallback or Mock
-                    t = time.time()
-                    vec = np.zeros(64, dtype=np.float32)
-                    for i in range(64):
-                        vec[i] = np.sin(i * 0.1 + t * 2)
-                    rf_buffer.append(vec)
-                
-            # Log ONLY if buffer is filling up slowly or stalling
-            if len(rf_buffer) < 50 and frame_count % 30 == 0:
-                 logging.info(f"Buffered {len(rf_buffer)}/50 packets. Waiting for more...")
-
-            # 2. Frame
+            # --- Frame Processing ---
             frame, _, _ = cam.read()
-            if frame is None:
-                continue
-            
+            if frame is None: continue
             h, w, _ = frame.shape
 
             # FPS
             frame_count += 1
-            curr_time = time.time()
-            if curr_time - prev_time >= 1.0:
-                fps = frame_count / (curr_time - prev_time)
+            if time.time() - prev_time >= 1.0:
+                fps = frame_count / (time.time() - prev_time)
                 frame_count = 0
-                prev_time = curr_time
-                logging.info(f"FPS: {fps:.2f} | Buffer: {len(rf_buffer)}/50")
+                prev_time = time.time()
 
-            # 3. Ground Truth (MediaPipe) - For Hybrid Logic
-            # We use MediaPipe to check if person is TRULY visible to camera
-            # If so, we can show skeleton (and maybe verify RF).
-            # If NOT, we rely on RF.
+            # --- Logic Rules ---
+            # 1. Camera visible?
+            cam_results = pose_estimator.process_frame(frame)
+            is_camera_visible = bool(cam_results.pose_landmarks)
             
-            # 4. Inference
-            if len(rf_buffer) == 50:
-                input_tensor = torch.FloatTensor([list(rf_buffer)]).to(device) # (1, 50, 64)
+            # 2. RF Variance (Activity Level)
+            # 2. RF Variance (Activity Level)
+            # Calculate variance of the LAST 50 frames in buffer
+            
+            for nid in ['A', 'B']:
+                if len(node_buffers[nid]) > 10:
+                    buff_arr = np.array(node_buffers[nid])
+                    # Variance along time axis (activity)
+                    var_val = np.mean(np.var(buff_arr, axis=0))
+                    node_variance[nid] = var_val
+                else:
+                    node_variance[nid] = 0.0
+
+            # --- Calibration Phase ---
+            pass # Logic handled below in Decision Tree section
+            
+            # Calibration State
+            if 'baseline' not in locals():
+                 baseline = {'A': 0.001, 'B': 0.001} # Defaults
+                 calib_buffer = {'A': [], 'B': []}
+                 is_calibrated = False
+
+            if not is_calibrated:
+                if len(node_buffers['A']) > 10 and len(node_buffers['B']) > 10:
+                    calib_buffer['A'].append(node_variance['A'])
+                    calib_buffer['B'].append(node_variance['B'])
+                    
+                    if len(calib_buffer['A']) > 60: # ~2 seconds of data
+                        baseline['A'] = np.mean(calib_buffer['A'])
+                        baseline['B'] = np.mean(calib_buffer['B'])
+                        is_calibrated = True
+                        logging.info(f"Calibration Complete. Baselines: A={baseline['A']:.5f}, B={baseline['B']:.5f}")
+                
+                location_text = "CALIBRATING (Stand Still)"
+                final_color = (0, 165, 255)
+            
+            else:
+                # Normal Operation
+                
+                # Activity = Current Var - Baseline (how much MORE variance than static?)
+                act_a = max(0, node_variance['A'] - baseline['A'])
+                act_b = max(0, node_variance['B'] - baseline['B'])
+                
+                # Sensitivity Threshold (e.g. 2x baseline or fixed +0.005)
+                # Let's use a fixed delta above baseline
+                min_activity = 0.002 
+                
+                if is_camera_visible:
+                    location_text = "Hallway (Visual)"
+                    final_color = (0, 255, 255)
+                elif act_a < min_activity and act_b < min_activity:
+                     location_text = "Empty/Static"
+                     final_color = (50, 50, 50)
+                else:
+                    # Compare Relative Activity
+                    diff = act_a - act_b
+                    
+                    if diff > 0.002: 
+                        location_text = "Room A (RF-A)"
+                        final_color = (0, 255, 0)
+                    elif diff < -0.002:
+                        location_text = "Room B (RF-B)"
+                        final_color = (255, 0, 0)
+                    else:
+                        location_text = "Uncertain/Both"
+                        final_color = (255, 0, 255)
+                        
+                cv2.putText(frame, f"Act A: {act_a:.4f}", (10, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
+                cv2.putText(frame, f"Act B: {act_b:.4f}", (10, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
+
+            # --- Inference (If Buffers Full) ---
+            if len(node_buffers['A']) == 50 and len(node_buffers['B']) == 50:
+                # Merge: Stack (50, 64) and (50, 64) -> (50, 128)
+                t_a = torch.tensor(np.array(node_buffers['A']), dtype=torch.float32)
+                t_b = torch.tensor(np.array(node_buffers['B']), dtype=torch.float32)
+                merged = torch.cat([t_a, t_b], dim=1) # [50, 128]
+                
+                input_tensor = merged.unsqueeze(0).to(device) # [1, 50, 128]
+                
                 with torch.no_grad():
                     pred_pose, pred_pres, pred_loc = model(input_tensor)
-                    
-                presence_prob = pred_pres.item()
+                
                 pose_coords = pred_pose.cpu().numpy()[0]
-                loc = torch.argmax(pred_loc, dim=1).item()
-                loc_names = ["Room 1", "Room 2", "Hallway", "Empty"]
-                loc_text = loc_names[loc] if loc < len(loc_names) else "Unknown"
                 
-                # Color code
-                if loc == 0: color = (0, 255, 0) # Green Room 1
-                elif loc == 1: color = (255, 0, 0) # Blue Room 2
-                elif loc == 2: color = (0, 255, 255) # Yellow Hallway
-                else: color = (100, 100, 100) # Gray Empty
-                
-                # Hybrid Visualization Logic
-                # Logic: 
-                # If Presence > 0.5:
-                #    If Camera sees person (we don't have direct boolean from camera class, need to run pose estimator)
-                #    Run PoseEstimator on frame.
-                #    If PoseEstimator finds person -> Draw Skeleton (Green) + "Visual Confirmed"
-                #    Else -> Draw Skeleton (Red/RF) + "Non-LOS: " + Location
-                
-                # For efficiency/demo, let's just draw RF predictions 
-                
-                if presence_prob > 0.5:
-                    
-                    # Define connections (MediaPipe Pose topology)
-                    CONNECTIONS = [
-                        (11, 12), (11, 13), (13, 15), (12, 14), (14, 16), # Arms
-                        (11, 23), (12, 24), (23, 24),                     # Torso
-                        (23, 25), (25, 27), (27, 29), (29, 31),           # Left Leg
-                        (24, 26), (26, 28), (28, 30), (30, 32)            # Right Leg
-                    ]
-                    
-                    # Draw Lines
-                    for start_idx, end_idx in CONNECTIONS:
-                        if start_idx * 2 + 1 < len(pose_coords) and end_idx * 2 + 1 < len(pose_coords):
-                            x1 = int(pose_coords[start_idx * 2] * w)
-                            y1 = int(pose_coords[start_idx * 2 + 1] * h)
-                            x2 = int(pose_coords[end_idx * 2] * w)
-                            y2 = int(pose_coords[end_idx * 2 + 1] * h)
-                            cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                            
-                    # Draw keypoints
-                    for i in range(0, len(pose_coords), 2):
+                # Draw Stick Figure (RF)
+                # Only draw if "present"
+                if "Empty" not in location_text:
+                    # Scale logic or simple draw
+                     for i in range(0, len(pose_coords), 2):
                         x = int(pose_coords[i] * w)
                         y = int(pose_coords[i+1] * h)
-                        cv2.circle(frame, (x, y), 4, (0, 0, 255), -1)
-                    
-                    # Draw Status
-                    cv2.putText(frame, f"RF: Person Detected ({presence_prob:.2f})", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                    # Verbose Debug Stats
-                    y_off = 90
-                    cv2.putText(frame, f"Presence Prob: {presence_prob:.2f}", (10, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-                    
-                    probs = torch.softmax(pred_loc, dim=1).cpu().numpy()[0]
-                    for i, name in enumerate(loc_names):
-                        p = probs[i]
-                        c = (0, 255, 0) if i == loc else (200, 200, 200)
-                        cv2.putText(frame, f"{name}: {p:.2f}", (10, y_off + 25 + i*20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, c, 1)
-                    
-                else:
-                    cv2.putText(frame, f"RF: Empty ({presence_prob:.2f})", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
-                
-            else:
-                 # If buffer is not full, we can keep the LAST prediction
-                 # This prevents flickering "Buffering..." if packets drop for 1 frame
-                 # But sticking is what the user complained about. 
-                 # Let's show "Buffering" but maybe keep the drawing?
-                 # No, user wants to know why it's stuck. Buffering is the truth.
-                 msg = f"Buffering RF... {len(rf_buffer)}/50"
-                 cv2.putText(frame, msg, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-                 if len(rf_buffer) > 0:
-                     # Show last packet info
-                     cv2.putText(frame, "Receiving Data...", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                 else:
-                     cv2.putText(frame, "Waiting for packets...", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+                        if x > 0 and y > 0:
+                            cv2.circle(frame, (x, y), 4, final_color, -1)
 
-            # Draw FPS
-            cv2.putText(frame, f"FPS: {fps:.1f}", (w - 150, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            # --- Visualization UI ---
+            cv2.putText(frame, f"LOC: {location_text}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, final_color, 2)
+            cv2.putText(frame, f"Var A: {node_variance['A']:.4f}", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
+            cv2.putText(frame, f"Var B: {node_variance['B']:.4f}", (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
+            cv2.putText(frame, f"FPS: {fps:.1f}", (w-120, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 1)
 
-            # Visualize Raw CSI (Small graph in bottom corner)
-            if len(rf_buffer) > 0:
-                last_csi = rf_buffer[-1] # shape (64,)
-                # Draw box
-                graph_x = 10
-                graph_y = h - 110
-                graph_w = 200
-                graph_h = 100
-                cv2.rectangle(frame, (graph_x, graph_y), (graph_x + graph_w, graph_y + graph_h), (0, 0, 0), -1)
-                
-                # Auto-scale for visualization
-                c_min = np.min(last_csi)
-                c_max = np.max(last_csi)
-                if c_max - c_min < 0.001: c_max = c_min + 1 # avoid div/0
-                
-                # Plot points
-                for i in range(len(last_csi) - 1):
-                    # Normalize to 0-1 for graph
-                    y1 = (last_csi[i] - c_min) / (c_max - c_min)
-                    y2 = (last_csi[i+1] - c_min) / (c_max - c_min)
-                    
-                    pt1 = (int(graph_x + (i / 64.0) * graph_w), int(graph_y + graph_h - y1 * graph_h))
-                    pt2 = (int(graph_x + ((i+1) / 64.0) * graph_w), int(graph_y + graph_h - y2 * graph_h))
-                    cv2.line(frame, pt1, pt2, (0, 255, 0), 1)
-                cv2.putText(frame, f"CSI Range: [{c_min:.1f}, {c_max:.1f}]", (graph_x, graph_y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+            # Missing Node Warning
+            if len(nodes) < 2:
+                cv2.putText(frame, f"Waiting for nodes... ({len(nodes)}/2)", (10, h-20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-            cv2.imshow("Wi-Fi Human Detection (Hybrid)", frame)
+            # Valid IP Map display
+            y_ip = 120
+            # print(f"DEBUG NODES: {list(nodes.keys())}") 
+            for ip, nid in nodes.items():
+                 cv2.putText(frame, f"Node {nid}: {ip}", (10, y_ip), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                 y_ip += 20
+
+            cv2.imshow("Dual-Node Wi-Fi Sensing", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
-                
-            # time.sleep(0.01) # Remove sleep to go as fast as possible
-            
+
     except KeyboardInterrupt:
         pass
     finally:

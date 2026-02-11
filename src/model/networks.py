@@ -11,9 +11,9 @@ except ImportError:
     nn = MockNN() # Dummy namespace
 
 class RFEncoder(nn.Module if TORCH_AVAILABLE else object):
-    def __init__(self, input_features=64, hidden_dim=256, num_layers=3):
+    def __init__(self, input_features=128, hidden_dim=256, num_layers=3):
         """
-        :param input_features: Number of RF channels (CSI subcarriers=64)
+        :param input_features: Number of RF channels (CSI subcarriers=64 * 2 Nodes = 128)
         """
         if not TORCH_AVAILABLE:
             raise ImportError("PyTorch is not installed.")
@@ -126,7 +126,7 @@ class LocationClassifier(nn.Module if TORCH_AVAILABLE else object):
         return self.fc(x)
 
 class WifiPoseModel(nn.Module if TORCH_AVAILABLE else object):
-    def __init__(self, input_features=64, output_points=33):
+    def __init__(self, input_features=128, output_points=33):
         if not TORCH_AVAILABLE: raise ImportError("PyTorch missing")
         super(WifiPoseModel, self).__init__()
         self.encoder = RFEncoder(input_features=input_features, hidden_dim=256, num_layers=3)

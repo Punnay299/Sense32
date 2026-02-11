@@ -10,6 +10,8 @@ A cutting-edge deep learning project that tracks human presence, location (Room 
 **Key Features:**
 *   **Through-Wall Detection**: Detects human presence in adjacent rooms (NLOS).
 *   **Real-Time Pose Estimation**: Visualizes a stick figure purely from CSI (Channel State Information) data.
+*   **Adaptive Normalization**: Automatically calibrates to different environments using Median/IQR statistics.
+*   **Robust Interference**: Uses Probability Smoothing to prevent flickering and false negatives.
 *   **Zone Classification**: Accurately identifies if a person is in Room 1, Room 2, or the Hallway.
 *   **Autopilot Data Collection**: Automated tools to generate high-quality training datasets.
 
@@ -71,7 +73,7 @@ python3 scripts/master_collector.py
 ### 2. Process Labels
 Extracts ground-truth pose labels from the webcam (using MediaPipe) and applies **Blind Labeling** for hidden zones.
 ```bash
-python3 scripts/process_all_data.py --force_relabel
+    python3 scripts/process_all_data.py --force_relabel
 ```
 
 ### 3. Train the AI
@@ -85,7 +87,7 @@ Start the traffic generator (Terminal 1) and the Inference Engine (Terminal 2).
 
 **Terminal 1:**
 ```bash
-python3 scripts/traffic_generator.py --ip <ESP32_IP> --rate 100
+python3 scripts/traffic_generator.py --ip 10.42.0.173 --rate 100 --size 10
 ```
 
 **Terminal 2:**
