@@ -26,14 +26,15 @@ class TestIntegration(unittest.TestCase):
         
         # Synthetic Batch: 4 samples, 50 timesteps, 2 features
         inputs = torch.randn(4, 50, 2)
-        # Synthetic Labels: 4 samples, 34 coords (17*2)
-        labels_pose = torch.randn(4, 34)
+        # Synthetic Labels: 4 samples, 34 coords (17*2) -> Updated to 33*2 = 66
+        labels_pose = torch.randn(4, 66)
         labels_presence = torch.ones(4, 1)
 
         model.train()
         optimizer.zero_grad()
         
-        pred_pose, pred_presence = model(inputs)
+        # Forward pass
+        pred_pose, pred_presence, pred_loc = model(inputs)
         
         loss = criterion_pose(pred_pose, labels_pose)
         loss.backward()

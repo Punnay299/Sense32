@@ -34,7 +34,7 @@ def test_full_model_scaling():
     
     
     x = torch.randn(2, 50, 2) # (Batch, Time, Feat)
-    pose, pres = model(x)
+    pose, pres, loc = model(x)
     
     assert pose.shape == (2, 33*2) # 66
     assert pres.shape == (2, 1)    # 1

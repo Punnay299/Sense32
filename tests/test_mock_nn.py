@@ -1,8 +1,11 @@
 
 import unittest
 import sys
-import types
-from unittest.mock import patch
+import os
+from unittest.mock import patch, MagicMock
+
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 class TestMockNN(unittest.TestCase):
     def test_mock_nn_fallback(self):

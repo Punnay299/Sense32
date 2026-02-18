@@ -21,8 +21,13 @@ class CSICapture(RFInterface):
 
         self.sock = None
         self.pkt_count = 0
+        self.last_packet_time = time.time()
+        self.last_seq = 0
+        self.packet_loss_count = 0
 
     def _run(self):
+        self.start_time = time.time()
+        self.last_log_time = time.time()
         while self.running:
             # 1. Connection/Bind Loop
             self.sock = None
@@ -95,9 +100,20 @@ class CSICapture(RFInterface):
                         
                         self._emit(pkt)
                         
+                        self._emit(pkt)
+                        
                         self.pkt_count += 1
+                        self.last_packet_time = time.time()
+                        
+                        # Packet Loss / Jitter Estimation (Basic)
+                        # ts_device is usually microseconds or milliseconds.
+                        # We can't strictly track sequence numbers unless ESP32 sends them. 
+                        # But we can track valid rate.
+                        
                         if self.pkt_count % 100 == 0:
-                            logging.info(f"CSI Capture: Processed {self.pkt_count} packets. Last from {addr}")
+                            elapsed = time.time() - self.start_time if hasattr(self, 'start_time') else 0
+                            logging.info(f"CSI Capture: {self.pkt_count} pkts. Last: {addr}. Rate: {100/(time.time()-self.last_log_time):.1f} Hz")
+                            self.last_log_time = time.time()
 
                     except struct.error:
                          logging.warning("Malformed CSI packet header.")

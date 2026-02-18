@@ -46,7 +46,7 @@ class TestRobustness(unittest.TestCase):
         """Ensure dataset loading skips corrupt files without crashing."""
         # Create valid header but no data
         with open(os.path.join(self.test_dir, "rf_data.csv"), "w") as f:
-            f.write("timestamp_monotonic_ms,rssi,csi_amp\n")
+            f.write("timestamp_monotonic_ms,rssi,csi_amp,csi_phase\n")
             
         with open(os.path.join(self.test_dir, "labels.csv"), "w") as f:
             f.write("frame_index,timestamp_monotonic_ms,center_x\n")
@@ -59,9 +59,9 @@ class TestRobustness(unittest.TestCase):
         """Test parsing of bad CSI strings."""
         # Create file with one good line and one bad line
         with open(os.path.join(self.test_dir, "rf_data.csv"), "w") as f:
-            f.write("timestamp_monotonic_ms,rssi,csi_amp\n")
-            f.write("1000,-50,\"[1, 2, 3]\"\n") # Good (short but valid)
-            f.write("1001,-50,\"MALFORMED_LIST\"\n") # Bad
+            f.write("timestamp_monotonic_ms,rssi,csi_amp,csi_phase\n")
+            f.write("1000,-50,\"[1, 2, 3]\",\"[0,0,0]\"\n") # Good (short but valid)
+            f.write("1001,-50,\"MALFORMED_LIST\",\"[0,0,0]\"\n") # Bad
             
         # Create matching labels
         with open(os.path.join(self.test_dir, "labels.csv"), "w") as f:

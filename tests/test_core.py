@@ -86,14 +86,15 @@ class TestCoreLogic(unittest.TestCase):
         # I will check if valid_indices is empty.
         
         # self.assertEqual(len(ds), 0) 
-        pass 
+        # Transpose to [Batch, Channels, Seq] if model expects it, 
+    # OR if model expects [Batch, Seq, Channels] calculate accordingly.
+    # Logic will be fixed after viewing the file.
+    pass 
 
     def test_model_forward(self):
         """Test Model Inference Shape"""
         model = WifiPoseModel(input_features=64)
-        input_tensor = torch.zeros(1, 64, 50) # (Batch, Channels, Seq)
-        # Wait, dataset gives (64, 50). Network expects (Batch, 64, 50).
-        # Network internals: permute(0,2,1).
+        input_tensor = torch.zeros(1, 50, 64) # (Batch, Seq, Channels) -> Model likely permutes to (B, C, S)
         
         try:
              # Run forward

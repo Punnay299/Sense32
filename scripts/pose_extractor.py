@@ -36,6 +36,12 @@ def main():
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps <= 0: fps = 30.0 
     
+    # Check if video is valid/dummy
+    is_dummy_video = False
+    if total_frames == 0 or os.path.getsize(video_path) < 1000:
+        logging.warning("Video file appears to be dummy or empty. Switching to BLIND mode (using index).")
+        is_dummy_video = True
+    
     # Load Timestamp Index if available
     cam_timestamps = {}
     if os.path.exists(index_path):
@@ -55,66 +61,83 @@ def main():
         
         frame_idx = 0
         
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
+        while frame_idx < total_frames or is_dummy_video:
+            if is_dummy_video:
+                # Blind Loop based on camera_index
+                if not cam_timestamps:
+                     logging.error("No video and no camera_index.csv! Cannot process.")
+                     break
                 
-            # Calculate timestamp
+                # If we are past the last index, break
+                if frame_idx not in cam_timestamps:
+                     # Check if we are done (assuming contiguous)
+                     if frame_idx > max(cam_timestamps.keys()):
+                         break
+                
+                ret = False
+                frame = None
+            else:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+        
+        # Calculate timestamp (Common for both)
+            # Calculate timestamp (Common for both)
             if frame_idx in cam_timestamps:
                 ts_ms = cam_timestamps[frame_idx]
             else:
                 # Fallback Estimate
                 ts_ms = int((frame_idx / fps) * 1000)
-            
-            # Blind Labeling Logic (NLOS)
-            # If "room2", "room_a", "room_b" - assume user is present but hidden.
-            # "hallway" - assume present but might be partially hidden? Actually "hallway" often implies vision.
-            # But earlier logic had "hallway" in nlos. Let's keep it safe.
-            is_nlos = any(x in args.session.lower() for x in ["room2", "room_a", "room_b", "room1"])
-            
-            if is_nlos:
-                 # Force Presence
-                 visible = True
-                 # We use a special marker or just zeros. 
-                 # dataset.py checks "if kps and len(kps) > 0: presence = 1.0"
-                 # So we need to provide a dummy list of zeros to trigger presence=1
-                 # 33 landmarks * 4 (x,y,z,vis) = 132 zeros
-                 kps_list = [0.0] * 132 
-                 cx, cy = 0.5, 0.5 # Default center
-                 
-                 writer.writerow([frame_idx, ts_ms, visible, json.dumps(kps_list), cx, cy])
-                 
-                 if frame_idx % 100 == 0:
-                        print(f"Processed {frame_idx}/{total_frames} (Blind)", end='\r')
-                 frame_idx += 1
-                 continue
+                
+                # Blind Labeling Logic (NLOS)
+                # If "room2", "room_a", "room_b" - assume user is present but hidden.
+                # "hallway" - assume present but might be partially hidden? Actually "hallway" often implies vision.
+                # But earlier logic had "hallway" in nlos. Let's keep it safe.
+                is_nlos = any(x in args.session.lower() for x in ["room2", "room_a", "room_b", "room1"])
+                
+                if is_nlos:
+                     # Force Presence
+                     visible = True
+                     # We use a special marker or just zeros. 
+                     # dataset.py checks "if kps and len(kps) > 0: presence = 1.0"
+                     # So we need to provide a dummy list of zeros to trigger presence=1
+                     # 33 landmarks * 4 (x,y,z,vis) = 132 zeros
+                     kps_list = [0.0] * 132 
+                     cx, cy = 0.5, 0.5 # Default center
+                     
+                     writer.writerow([frame_idx, ts_ms, visible, json.dumps(kps_list), cx, cy])
+                     
+                     if frame_idx % 100 == 0:
+                            print(f"Processed {frame_idx}/{total_frames} (Blind)", end='\r')
+                     frame_idx += 1
+                     continue
 
             try:
-                results = pose_estimator.process_frame(frame)
-                
                 visible = False
                 kps_list = []
                 cx, cy = -1.0, -1.0
-                
-                if results.pose_landmarks:
-                    visible = True
-                    # Extract all 33 landmarks (x, y, z, visibility)
-                    for lm in results.pose_landmarks.landmark:
-                        kps_list.extend([lm.x, lm.y, lm.z, lm.visibility])
+
+                if not is_dummy_video:
+                    results = pose_estimator.process_frame(frame)
                     
-                    # Center of mass (approximate with hip center)
-                    left_hip = results.pose_landmarks.landmark[23]
-                    right_hip = results.pose_landmarks.landmark[24]
-                    cx = (left_hip.x + right_hip.x) / 2
-                    cy = (left_hip.y + right_hip.y) / 2
+                    if results.pose_landmarks:
+                        visible = True
+                        # Extract all 33 landmarks (x, y, z, visibility)
+                        for lm in results.pose_landmarks.landmark:
+                            kps_list.extend([lm.x, lm.y, lm.z, lm.visibility])
+                        
+                        # Center of mass (approximate with hip center)
+                        left_hip = results.pose_landmarks.landmark[23]
+                        right_hip = results.pose_landmarks.landmark[24]
+                        cx = (left_hip.x + right_hip.x) / 2
+                        cy = (left_hip.y + right_hip.y) / 2
                 
                 writer.writerow([frame_idx, ts_ms, visible, json.dumps(kps_list), cx, cy])
-                
+
             except Exception as e:
+                # This block is only reached if is_dummy_video is False and is_nlos is False
+                # The original instruction's diff had a redundant 'else' here, which is removed.
                 logging.error(f"Error processing frame {frame_idx}: {e}")
-                # Write empty row to maintain sync?
-                # Best to write empty result
                 writer.writerow([frame_idx, ts_ms, False, "[]", -1, -1])
             
             if frame_idx % 100 == 0:

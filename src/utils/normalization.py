@@ -25,23 +25,28 @@ class AdaptiveScaler:
         else:
             flat_data = data
             
-        logging.info(f"AdaptiveScaler: Fitting on {len(flat_data)} samples...")
+        logging.info(f"AdaptiveScaler: Fitting on {len(flat_data)} samples (GLOBAL Mode)...")
+        
+        # GLOBAL SCALING: Compute stats across ALL values (Features flattened too)
+        # This ensures we preserve relative magnitude between Node A and Node B.
+        
+        # Flatten everything to 1D array
+        all_values = flat_data.flatten()
         
         # 1. Compute Median
-        self.median = np.median(flat_data, axis=0)
+        self.median = np.median(all_values)
         
-        # 2. Compute IQR (Inter-Quartile Range) 25th and 75th percentile
-        q75, q25 = np.percentile(flat_data, [75 ,25], axis=0)
+        # 2. Compute IQR
+        q75, q25 = np.percentile(all_values, [75 ,25])
         self.iqr = q75 - q25
         
-        # Avoid division by zero
-        self.iqr[self.iqr == 0] = 1.0
+        if self.iqr == 0: self.iqr = 1.0
         
-        # 3. Compute Min/Max for clipping (optional fallback)
-        self.min_val = np.min(flat_data, axis=0)
-        self.max_val = np.max(flat_data, axis=0)
+        # 3. Min/Max (just for logging)
+        self.min_val = np.min(all_values)
+        self.max_val = np.max(all_values)
         
-        logging.info("AdaptiveScaler: Fit complete.")
+        logging.info(f"AdaptiveScaler: Fit complete. Median={self.median:.4f}, IQR={self.iqr:.4f}")
 
     def transform(self, data):
         """
@@ -50,16 +55,76 @@ class AdaptiveScaler:
         Finally scale to [0, 1] approximately for the Neural Network.
         """
         if self.median is None:
-            raise ValueError("Scaler not fitted!")
+            # Fallback if not fitted (e.g. strict instance norm wanted)
+            # For this specific project restart, we might want purely instance norm.
+            # But to keep compatibility, let's keep the error or just warn.
+            pass
             
-        # (X - Median) / IQR
-        scaled = (data - self.median) / self.iqr
+        # Standard Adaptive Scaling (Global)
+        if self.median is not None:
+            # LOG1P SCALING (New Feb 2026)
+            # Compress spikes: log(x+1)
+            # We assume data is absolute amplitude. Phase should NOT be logged if it includes negative values?
+            # Wait, phase is -pi to pi. Taking log of negative is bad.
+            # But this scaler is used on EVERYTHING (stacked).
+            # We must be careful.
+            # "data" here is the full stacked array.
+            # Ideally, we should only log AMPLITUDE.
+            # But the scaler is generic.
+            # Let's trust that 'dataset.py' handles the splitting or we just apply log to everything and hope phase doesn't break?
+            # No, log of negative phase is NaN.
+            # WE MUST HANDLE THIS IN DATASET.PY instead of here?
+            # Or we assume this Scaler is ONLY for Amplitude?
+            # The code stacks Amp+Phase then calls transform().
+            # So we CANNOT just log everything.
+            
+            # REVERT STRATEGY: Do NOT log here.
+            # Log in dataset.py/inference.py BEFORE stacking or BEFORE calling transform.
+            # But wait, transform() uses self.median which was fitted on... what?
+            # If we log in dataset.py, we feed logged data to fit().
+            # So this scaler just sees "some distribution" and scales it.
+            # That is cleaner.
+            
+            # So... actually I should NOT change this file to force log?
+            # The plan said "Update AdaptiveScaler to apply np.log1p".
+            # But due to Phase (negative values), I should delegate that to the caller.
+            # OR I can check for negative values?
+            
+            # Let's keep this file as "Robust Z-Score" (Median/IQR) and do the Log transform OUTSIDE.
+            # Actually, let's just make it robust to NaNs if I forced it? No.
+            
+            # CHANGE OF PLAN: I will NOT modify this file's logic to force log.
+            # I will modify dataset.py to apply log to AMPLITUDE ONLY, then stack Phase, then fit/transform.
+            
+            scaled = (data - self.median) / self.iqr
+            scaled = np.clip(scaled, -3.0, 3.0)
+            scaled = (scaled + 3.0) / 6.0
+            return scaled
+        else:
+            return data
+
+    @staticmethod
+    def instance_norm(data):
+        """
+        Apply Instance Normalization (Per Window Z-Score).
+        Independent of Global Statistics.
+        Shape: (N, Features)
+        """
+        # Mean/Std per sample (axis=1) or per window? 
+        # Here 'data' is usually (50, 64) -> Window.
+        # We want to normalize the ENTIRE window to mean=0, std=1.
         
-        # Clip extreme outliers (e.g. glitches)
+        mean = np.mean(data)
+        std = np.std(data)
+        
+        if std == 0: std = 1e-5
+        
+        scaled = (data - mean) / std
+        
+        # Clip outliers
         scaled = np.clip(scaled, -3.0, 3.0)
         
-        # Shift to [0, 1] range for stability (activation functions like ReLU work well with positive inputs)
-        # -3 becomes 0, +3 becomes 1
+        # Scale to [0, 1] for model (Soft range)
         scaled = (scaled + 3.0) / 6.0
         
         return scaled

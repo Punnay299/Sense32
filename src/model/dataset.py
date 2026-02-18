@@ -11,6 +11,7 @@ import sys
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 from src.utils.normalization import AdaptiveScaler
+from src.utils.csi_sanitizer import CSISanitizer
 
 class RFDataset(Dataset):
     def __init__(self, session_paths, seq_len=50, augment=False, scaler=None):
@@ -75,49 +76,193 @@ class RFDataset(Dataset):
             # Check for CSI data presence
             has_csi = "csi_amp" in rf_df.columns and rf_df["csi_amp"].iloc[0] != "[]" and isinstance(rf_df["csi_amp"].iloc[0], str)
             
-            # Filter for Dominant Source (Avoid mixing multiple ESP32s)
+            # Filter for Dominant Sources (Dual Node Support)
             if "source" in rf_df.columns:
                 counts = rf_df["source"].value_counts()
-                if len(counts) > 0:
-                    dom_source = counts.index[0]
-                    # logging.info(f"Session {path}: Locking to source {dom_source} (Counts: {counts.to_dict()})")
-                    rf_df = rf_df[rf_df["source"] == dom_source]
+                unique_sources = sorted(counts.index.tolist()) # Sort by string (IP/MAC)
+                
+                # We expect 2 nodes. If more, take top 2.
+                # If 1, duplicate? Or fail? User wants ROBUST.
+                # Let's take up to 2.
+                if len(unique_sources) > 2:
+                     unique_sources = unique_sources[:2]
+                
+                logging.info(f"Session {path}: Found sources {unique_sources}")
+                
+            # Separate DataFrames per Source
+            dfs = {}
+            for src in unique_sources:
+                 dfs[src] = rf_df[rf_df["source"] == src].copy()
             
-            rf_feats = []
+            # Master Time Base (Use the first source as master)
+            if len(unique_sources) > 0:
+                 master_src = unique_sources[0]
+                 master_times = dfs[master_src]["timestamp_monotonic_ms"].values
+            else:
+                 logging.warning(f"Skipping {path}: No sources found")
+                 return
+
+            # Extract Features for each source
+            # We will stack them: [Src1_64, Src2_64] -> 128
             
-            if has_csi:
-                # Parse CSI
-                for i, x in enumerate(rf_df["csi_amp"].values):
+            merged_feats = []
+            
+            # Pre-parse CSI for all
+            parsed_csi = {}
+            for src in unique_sources:
+                 parsed_csi[src] = []
+                 for x in dfs[src]["csi_amp"].values:
                     try:
                         val = ast.literal_eval(x)
                         if isinstance(val, list):
-                            # Pad/Cut to 64
                             if len(val) >= 64: val = val[:64]
                             else: val = val + [0]*(64-len(val))
-                            rf_feats.append(val)
+                            parsed_csi[src].append(val)
                         else:
-                            rf_feats.append([0]*64)
+                            parsed_csi[src].append([0]*64)
                     except:
-                        rf_feats.append([0]*64)
-                
-                rf_feats = np.array(rf_feats, dtype=np.float32)
-                # Normalization is now handled by AdaptiveScaler in __init__
-                # rf_feats = rf_feats / 127.0
-                # rf_feats = np.clip(rf_feats, 0, 1)
-                
-            else:
-                # RSSI Fallback Removed as per user request for Robustness.
-                # We strictly require CSI data.
-                logging.warning(f"Skipping part of {path}: No CSI data found (RSSI ignored).")
-                # rf_feats remains empty or filled with zeros if we want to support partial? 
-                # Better to just not append anything if individual packets are missing?
-                # But here we are iterating per-packet? 
-                # No, `rf_feats` is per-session.
-                # If `has_csi` is False, the loop above `if has_csi:` didn't run. 
-                # `rf_feats` is empty.
-                pass
+                        parsed_csi[src].append([0]*64)
+                 parsed_csi[src] = np.array(parsed_csi[src], dtype=np.float32)
+                 
+                 # --- AMPLITUDE SANITIZATION ---
+                 # 1. Hampel Filter (Amplitude Spikes)
+                 parsed_csi[src] = CSISanitizer.sanitize_amplitude(parsed_csi[src])
+                 
+                 # --- PHASE LOADING & SANITIZATION ---
+                 # We need to parse 'csi_phase' if available. 
+                 # The current loop iterates over 'csi_amp'. We need to iterate over 'csi_phase' too?
+                 # Better: Do it in one go if possible, or parallel loop.
+                 # Let's check if 'csi_phase' column exists
+                 
+                 parsed_phase = []
+                 if "csi_phase" in dfs[src].columns:
+                     for x in dfs[src]["csi_phase"].values:
+                        try:
+                            val = ast.literal_eval(x)
+                            if isinstance(val, list):
+                                if len(val) >= 64: val = val[:64]
+                                else: val = val + [0]*(64-len(val))
+                                parsed_phase.append(val)
+                            else:
+                                parsed_phase.append([0]*64)
+                        except:
+                            parsed_phase.append([0]*64)
+                 else:
+                     # Fallback if no phase data (shouldn't happen with new collection)
+                     parsed_phase = [[0]*64] * len(parsed_csi[src])
+                 
+                 parsed_phase = np.array(parsed_phase, dtype=np.float32)
+                 
+                 # Sanitize Phase (Unwrap + Detrend)
+                 # Only if we actually have data (non-zero)
+                 if np.max(np.abs(parsed_phase)) > 0:
+                    parsed_phase = CSISanitizer.sanitize_phase(parsed_phase)
+                 
+                 # Stack Amplitude + Phase [Seq, 128]
+                 # We want [Seq, 64_Amp, 64_Phase]?
+                 # networks.py expects 1D per subcarrier? 
+                 # Actually, it treats input as "Features". 
+                 # If we stack [Amp, Phase], we get 128 features per node.
+                 # Total input to model (2 nodes) = 256 features.
+                 
+                 parsed_csi[src] = np.concatenate([parsed_csi[src], parsed_phase], axis=1)
+
+            # Sync and Merge
+            # FIXED LOGIC: Strict Slot Assignment
+            # Slot 0 = Node A (10.42.0.149)
+            # Slot 1 = Node B (10.42.0.173)
             
-            rf_times = rf_df["timestamp_monotonic_ms"].values
+            target_ips = ["10.42.0.149", "10.42.0.173"] 
+            
+            rf_feats = []
+            
+            # Determine Master Time Base
+            # Ideally use the one that exists. If both exist, use Node A?
+            # If only B exists, use B.
+            
+            present_sources = [s for s in target_ips if s in unique_sources]
+            if len(present_sources) == 0:
+                 # Fallback for some non-standard IPs?
+                 # Or just skip?
+                 if len(unique_sources) > 0:
+                     master_src = unique_sources[0] # Use whatever we found
+                 else:
+                     return 
+            else:
+                master_src = present_sources[0]
+                
+            master_times = dfs[master_src]["timestamp_monotonic_ms"].values
+
+            for i, ts in enumerate(master_times):
+                 row_feat = []
+                 
+                 for ip in target_ips:
+                     # Check if we have data for this IP
+                     # Note: We rely on 'unique_sources' containing the full IP string found in CSV
+                     # Is it partial match? dataset usually has full IP if sanitized.
+                     # Let's check keys in parsed_csi.
+                     
+                     found_key = None
+                     for k in parsed_csi.keys():
+                         if ip in k: # Partial match for safety (e.g. port numbers?)
+                             found_key = k
+                             break
+                     
+                     if found_key:
+                         # We have data for this Node Slot
+                         # Find sync index
+                         if found_key == master_src:
+                             # It's the master, direct index
+                             idx = i
+                         else:
+                             # Sync
+                             curr_times = dfs[found_key]["timestamp_monotonic_ms"].values
+                             idx = np.searchsorted(curr_times, ts)
+                             if idx >= len(curr_times): idx = len(curr_times) - 1
+                             if idx < 0: idx = 0
+                        
+                         # Extract 128 features (64 Amp + 64 Phase)
+                         raw_128 = parsed_csi[found_key][idx]
+                         
+                         # Apply LOG1P to Amplitude ONLY (First 64)
+                         # We do this BEFORE stacking to ensure the scaler sees log-distributed data.
+                         amp = raw_128[:64]
+                         phase = raw_128[64:]
+                         
+                         # Log Transform: log(x+1) to compress spikes
+                         amp_log = np.log1p(amp)
+                         
+                         # Re-stack
+                         node_vec = np.concatenate([amp_log, phase])
+                         row_feat.extend(node_vec)
+                     else:
+                         # Node Missing -> PAD ZEROES
+                         row_feat.extend([0]*128) # 64 Amp + 64 Phase
+                 
+                 # --- DIFFERENCE FEATURE (Feb 2026 Bias Fix) ---
+                 # We now have [AmpA_Log, PhA, AmpB_Log, PhB] in 'row_feat' (Length 256)
+                 # We want to add [Diff_Amp] = AmpA_Log - AmpB_Log
+                 # Indices: 
+                 # AmpA_Log: 0:64
+                 # AmpB_Log: 128:192
+                 
+                 # Check if we have enough data (2 nodes * 128 = 256)
+                 if len(row_feat) == 256:
+                     amp_a_log = np.array(row_feat[0:64])
+                     amp_b_log = np.array(row_feat[128:192])
+                     
+                     # Simple Difference
+                     diff_amp = amp_a_log - amp_b_log
+                     
+                     row_feat.extend(diff_amp) # Add 64 features -> Total 320
+                 else:
+                     # Should not happen given logic above, but safety
+                     row_feat.extend([0]*64)
+
+                 rf_feats.append(row_feat)
+
+            rf_feats = np.array(rf_feats, dtype=np.float32)
+            rf_times = master_times
             
             self.sessions_data.append({
                 'rf_feats': rf_feats,
