@@ -21,7 +21,7 @@ class TestDatasetRobustness(unittest.TestCase):
     def test_dataset_corrupt_files(self):
         """Ensure dataset loading skips corrupt files without crashing."""
         with open(os.path.join(self.test_dir, "rf_data.csv"), "w") as f:
-            f.write("timestamp_monotonic_ms,rssi,csi_amp\n")
+            f.write("timestamp_monotonic_ms,rssi,csi_amp,csi_phase\n")
             
         with open(os.path.join(self.test_dir, "labels.csv"), "w") as f:
             f.write("frame_index,timestamp_monotonic_ms,center_x\n")
@@ -32,9 +32,9 @@ class TestDatasetRobustness(unittest.TestCase):
     def test_dataset_malformed_csi(self):
         """Test parsing of bad CSI strings."""
         with open(os.path.join(self.test_dir, "rf_data.csv"), "w") as f:
-            f.write("timestamp_monotonic_ms,rssi,csi_amp\n")
-            f.write("1000,-50,\"[1, 2, 3]\"\n") 
-            f.write("1001,-50,\"MALFORMED_LIST\"\n") 
+            f.write("timestamp_monotonic_ms,rssi,csi_amp,csi_phase\n")
+            f.write("1000,-50,\"[1, 2, 3]\",\"[0,0,0]\"\n") 
+            f.write("1001,-50,\"MALFORMED_LIST\",\"[0,0,0]\"\n") 
             
         with open(os.path.join(self.test_dir, "labels.csv"), "w") as f:
             f.write("frame_index,timestamp_monotonic_ms,center_x,center_y,visible\n")

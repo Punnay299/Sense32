@@ -1,43 +1,30 @@
-# Wi-Fi Human Sensing: See Through Walls with ESP32 & AI
+# Wi-Fi Human Sensing: Through-Wall Detection with ESP32 & AI
 
-![Wi-Fi Sensing Banner](https://img.shields.io/badge/Wi--Fi-Sensing-blue)
+![Wi-Fi Sensing](https://img.shields.io/badge/Wi--Fi-Sensing-blue)
 ![Python 3.11](https://img.shields.io/badge/Python-3.11-yellow)
 ![PyTorch](https://img.shields.io/badge/PyTorch-Deep%20Learning-red)
 ![ESP32](https://img.shields.io/badge/Hardware-ESP32-green)
+![Status: Debugging](https://img.shields.io/badge/Status-Debugging_Signal_Bias-critical)
 
-A cutting-edge deep learning project that tracks human presence, location (Room 1 vs Room 2), and pose (stick figure) using only Wi-Fi signals. No cameras required for the final deployment!
+A deep learning project attempting to track human presence, location (Room 1 vs Room 2), and pose using only Wi-Fi signals from two ESP32 nodes.
 
-**Key Features:**
-*   **Through-Wall Detection**: Detects human presence in adjacent rooms (NLOS).
-*   **Real-Time Pose Estimation**: Visualizes a stick figure purely from CSI (Channel State Information) data.
-*   **Adaptive Normalization**: Automatically calibrates to different environments using Median/IQR statistics.
-*   **Robust Interference**: Uses Probability Smoothing to prevent flickering and false negatives.
-*   **Zone Classification**: Accurately identifies if a person is in Room 1, Room 2, or the Hallway.
-*   **Autopilot Data Collection**: Automated tools to generate high-quality training datasets.
+**Current Status (Feb 2026):** The system successfully captures and visualizes CSI data, but currently suffers from a critical **Signal Strength Bias** where "Room B" is frequently detected even when the user is in "Room A". Hardware and software investigations are ongoing.
 
 ---
 
-## 🚀 How It Works
-
-1.  **Traffic Generator**: A script floods the network with high-rate (100Hz) UDP packets.
-2.  **CSI Capture (ESP32)**: An ESP32 microcontroller intercepts these packets and extracts the "Channel State Information" (CSI)—a complex matrix describing how the Wi-Fi waves bounced around the room.
-3.  **AI Processing**: A **1D CNN + LSTM** neural network analyzes the CSI distortions caused by the human body.
-4.  **Result**: The AI outputs the person's location and 33-point skeletal pose in real-time.
+## 🚀 Concept
+1.  **Traffic Generator**: A script floods the network with 100Hz UDP packets.
+2.  **CSI Capture**: Two ESP32s (Node A & Node B) intercept these packets and measure the "Channel State Information" (CSI)—how Wi-Fi signals bounce around the room.
+3.  **AI Processing**: A **1D CNN + LSTM** neural network analyzes these signal distortions to infer human presence and location.
 
 ---
 
 ## 🛠️ Hardware Setup
 
-*   **Receiver**: ESP32 DevKit V1 (running custom firmware).
-*   **Transmitter**: Standard Wi-Fi Router or a second ESP32.
-*   **Server**: Laptop/PC with Python 3.11 & GPU (optional but recommended).
-
-**Placement Strategy:**
-*   **Router**: Corner of Room 1.
-*   **ESP32**: Center of Room 1.
-*   This creates a "sensing web" effective for both Line-of-Sight (Room 1) and Non-Line-of-Sight (Room 2).
-
-*See [DATA_COLLECTION.md](DATA_COLLECTION.md) for detailed setup diagrams.*
+*   **Receiver A (Node A)**: ESP32 in **Room 1** (Target IP: `10.42.0.149`).
+*   **Receiver B (Node B)**: ESP32 in **Room 2** (Target IP: `10.42.0.173`).
+*   **Transmitter**: Laptop (Linux) running a Wi-Fi Hotspot (`10.42.0.1`).
+*   **Camera**: Webcam for ground-truth labeling during training.
 
 ---
 
@@ -55,72 +42,60 @@ A cutting-edge deep learning project that tracks human presence, location (Room 
     ```
 
 3.  **Flash Firmware**
-    *   Open `firmware/esp32_csi_rx/esp32_csi_rx.ino` in Arduino IDE.
-    *   Set your Wi-Fi credentials (`SSID`, `PASSWORD`) and Laptop IP (`TARGET_IP`).
-    *   Flash to your ESP32.
+    *   Open `firmware/esp32_csi_rx/esp32_csi_rx.ino`.
+    *   Set `SSID`, `PASSWORD`, and `TARGET_IP` (Laptop IP).
+    *   Flash to both ESP32s.
 
 ---
 
 ## 🏃 Usage
 
-### 1. Collect Training Data
-We use a **Master Script** to guide you through recording Room 1, Room 2, and Hallway scenarios.
+### 1. Collect Data
+Use the master collector to record labeled sessions.
 ```bash
 python3 scripts/master_collector.py
 ```
-*(Follow the on-screen prompts. Records valid data for ~10 minutes).*
+*   Follow prompts to record "Room A", "Room B", and "Empty" scenarios.
+*   **Crucial**: You must collect "Empty" room data to teach the model the baseline noise.
 
 ### 2. Process Labels
-Extracts ground-truth pose labels from the webcam (using MediaPipe) and applies **Blind Labeling** for hidden zones.
+Extracts pose labels from video and cleans the CSI data.
 ```bash
-    python3 scripts/process_all_data.py --force_relabel
+python3 scripts/process_all_data.py --force_relabel
 ```
 
-### 3. Train the AI
-Trains the custom CNN-LSTM model.
+### 3. Train the Model
+Trains the CNN-LSTM model on all collected data.
 ```bash
-python3 scripts/train_local.py --all_data --epochs 50
+python3 scripts/train_local.py --all_data --epochs 30
 ```
+*   **Note**: This now uses **Global Scaling** (Median/IQR calculated across the entire dataset) to preserve relative signal strength differences between nodes.
 
-### 4. Run Live Demo
-Start the traffic generator (Terminal 1) and the Inference Engine (Terminal 2).
-
-**Terminal 1:**
+### 4. Run Live Inference
+Starts the real-time detection engine.
 ```bash
-python3 scripts/traffic_generator.py --ip 10.42.0.173 --rate 100 --size 10
+python3 scripts/run_inference.py --debug_stats
 ```
-
-**Terminal 2:**
-```bash
-python3 scripts/run_inference.py --rf_mode esp32
-```
+*   `--debug_stats`: Prints the live Scaled Energy of Node A vs Node B to the console.
 
 ---
 
-## 📂 Project Structure
+## 🐛 Troubleshooting & Known Issues
 
-*   `src/`: Core libraries (CSI capture, Model architecture, Dataset loader).
-*   `scripts/`: Executable tools for training, inference, and data collection.
-*   `firmware/`: ESP32 Arduino C++ code.
-*   `data/`: Stores recorded sessions (gitignored).
-*   `models/`: Stores trained `.pth` model checkpoints.
+### **Critical Issue: Room B Bias**
+**Symptom**: The model correctly identifies "Room B" when the user is in Room B, but **also** detects "Room B" (or fluctuates heavily) when the user is in Room A. "Room A" detection is rare or unstable.
 
----
+**Attempted Solutions (None Worked So Far):**
+1.  **Global Scaling**: We switched from "Instance Normalization" (which made both nodes look identical) to "Global Scaling" to preserve Node A's naturally higher amplitude.
+    *   *Result*: Training data shows separation (Node A variance > Node B variance in Room A), but live inference still output incorrect predictions.
+2.  **Physical Verification**: Confirmed Node A (`10.42.0.149`) is physically louder/closer than Node B (`10.42.0.173`).
+    *   *Result*: Verified. Node A Raw Mean ~15, Node B Raw Mean ~13.
+3.  **Strict IP Mapping**: Hardcoded IP-to-Slot assignments in `dataset.py` and `run_inference.py` to prevent channel swapping.
+    *   *Result*: Verified correct slots, but bias persists.
+4.  **Retraining**: Retrained model from scratch on Global Scaled data.
+    *   *Result*: No significant improvement in live accuracy.
 
-## 🧠 Technical Details
+**Current Hypothesis**:
+The model might be over-fitting to the specific *shape* of the Room B reflections rather than the *magnitude* of the signal. Alternatively, the "Global Scaler" might be skewed by the "Empty" room data if it dominates the dataset, compressing the dynamic range for the "Human" class.
 
-*   **Model**: A hybrid architecture using 1D Convolutional layers (for spatial feature extraction from subcarriers) followed by LSTM layers (for temporal dynamics).
-*   **Inputs**: 64 subcarriers of CSI amplitude/phase.
-*   **Outputs**:
-    *   **Pose**: 66 values (33 keypoints x 2 coordinates).
-    *   **Presence**: Probability (0-1).
-    *   **Location**: Classification (Room 1, Room 2, Hallway, Empty).
-
-*See [CSI_VISION.md](CSI_VISION.md) for a deep dive into the theory.*
-
----
-
-## 🤝 Contributors
-*   **Punnay** - Lead Developer & Research
-
-LICENSE: MIT
+See `CSI_VISION.md` for detailed technical breakdown.

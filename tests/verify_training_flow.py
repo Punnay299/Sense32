@@ -13,14 +13,14 @@ def verify_csi_training():
     logger = logging.getLogger("CSI_Verification")
     logger.info("Starting CSI Primacy Verification...")
 
-    # 1. Initialize Model
-    model = WifiPoseModel(input_features=64, output_points=33)
+    # 1. Initialize Model (256 Features: 128 Amp + 128 Phase)
+    model = WifiPoseModel(input_features=256, output_points=33)
     model.train()
-    logger.info("Model initialized. Input expected: [Batch, Seq, 64]")
+    logger.info("Model initialized. Input expected: [Batch, Seq, 256]")
 
-    # 2. Create Synthetic CSI Data (Batch=2, Seq=50, Channels=64)
-    # This simulates 2 seconds of CSI data from 2 users
-    rf_input = torch.randn(2, 50, 64) 
+    # 2. Create Synthetic CSI Data (Batch=2, Seq=50, Channels=256)
+    # This simulates 2 seconds of CSI data from 2 users (Amp + Phase)
+    rf_input = torch.randn(2, 50, 256) 
     logger.info(f"Generated Synthetic CSI Data Shape: {rf_input.shape}")
 
     # 3. Create Synthetic Ground Truth (Batch=2, Points=66)

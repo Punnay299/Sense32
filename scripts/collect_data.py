@@ -29,6 +29,7 @@ def main():
     parser.add_argument("--beacon", action="store_true", help="Enable Sync Beacon")
     parser.add_argument("--headless", action="store_true", help="Run without UI")
     parser.add_argument("--mock_cam", action="store_true", help="Use Mock Camera")
+    parser.add_argument("--no_cam", action="store_true", help="Disable camera entirely (for noise/blind collection)")
     parser.add_argument("--start_delay", type=int, default=0, help="Delay in seconds before recording starts")
     args = parser.parse_args()
 
@@ -57,7 +58,10 @@ def main():
         writer_beacon.writerow(["seq_id", "timestamp_monotonic_ms", "payload"])
 
     # Initialize Modules
-    if args.mock_cam:
+    if args.no_cam:
+        cam = None
+        logging.info("Camera Disabled (Noise/Blind Mode)")
+    elif args.mock_cam:
         cam = MockCameraCapture(width=640, height=480)
     else:
         cam = CameraCapture(device_id=args.cam_id)
@@ -85,7 +89,7 @@ def main():
         beacon = LabelSyncBeacon(port=5001)
 
     # Start Modules
-    cam.start()
+    if cam: cam.start()
     rf.start()
 
     def beacon_log(seq, ts, payload):
@@ -96,15 +100,22 @@ def main():
         beacon.start(beacon_log)
 
     # Video Writer
-    # Wait for first frame to get size
-    while cam.read()[0] is None:
-        time.sleep(0.1)
-    
-    first_frame, _, _ = cam.read()
-    h, w = first_frame.shape[:2]
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    video_path = os.path.join(session_dir, "video.mp4")
-    out_video = cv2.VideoWriter(video_path, fourcc, 30.0, (w, h))
+    out_video = None
+    if cam:
+        # Wait for first frame to get size
+        while cam.read()[0] is None:
+            time.sleep(0.1)
+        
+        first_frame, _, _ = cam.read()
+        h, w = first_frame.shape[:2]
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        video_path = os.path.join(session_dir, "video.mp4")
+        out_video = cv2.VideoWriter(video_path, fourcc, 30.0, (w, h))
+    else:
+         # Create a dummy "TOUCH" file for video.mp4 so other scripts don't crash checking for existence
+         video_path = os.path.join(session_dir, "video.mp4")
+         with open(video_path, 'wb') as f:
+             pass
 
     if args.start_delay > 0:
         logging.info(f"Waiting {args.start_delay} seconds before starting...")
@@ -127,7 +138,7 @@ def main():
                     writer_rf.writerow([
                         pkt['timestamp_monotonic_ms'],
                         pkt.get('timestamp_device_ms', 0),
-                        pkt.get('source', ''),
+                        pkt.get('source', str(pkt.get('ip', 'unknown'))), # Ensure source is logged
                         pkt.get('rssi', -100),
                         pkt.get('rtt_ms', -1),
                         pkt.get('mac_address', ''),
@@ -139,21 +150,29 @@ def main():
                     logging.error(f"Failed to write RF packet: {e}")
             
             # 2. Process Camera
-            frame, ts_mono, ts_wall = cam.read()
-            
-            # Only write if we have a valid frame AND it's a new frame (different timestamp)
-            if frame is not None and ts_mono > last_frame_ts:
-                last_frame_ts = ts_mono
+            if cam:
+                frame, ts_mono, ts_wall = cam.read()
                 
-                out_video.write(frame)
+                # Only write if we have a valid frame AND it's a new frame (different timestamp)
+                if frame is not None and ts_mono > last_frame_ts:
+                    last_frame_ts = ts_mono
+                    
+                    out_video.write(frame)
+                    writer_cam.writerow([frame_idx, ts_mono, ts_wall])
+                    frame_idx += 1
+                    
+                    # Show preview
+                    if not args.headless:
+                        cv2.imshow('Recording', frame)
+                        if cv2.waitKey(1) & 0xFF == ord('q'):
+                            break
+            else:
+                # No Camera Mode: Fake the "frame index" for sync purposes at 30FPS
+                # We need to write to camera_index so pose_extractor knows the timing
+                ts_mono = int(time.perf_counter() * 1000)
+                ts_wall = int(time.time() * 1000)
                 writer_cam.writerow([frame_idx, ts_mono, ts_wall])
                 frame_idx += 1
-                
-                # Show preview
-                if not args.headless:
-                    cv2.imshow('Recording', frame)
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
-                        break
             
             # Flush periodically
             if frame_idx % 30 == 0:
@@ -178,12 +197,12 @@ def main():
         logging.info("Interrupted by user.")
     finally:
         logging.info("Stopping modules...")
-        cam.stop()
+        if cam: cam.stop()
         rf.stop()
         if beacon:
             beacon.stop()
         
-        out_video.release()
+        if out_video: out_video.release()
         f_rf.close()
         f_cam.close()
         if f_beacon:

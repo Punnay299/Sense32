@@ -33,10 +33,18 @@ def main():
         
         pbar.set_postfix({"Current": os.path.basename(session)[:15]})
         
-        if not os.path.exists(video_file):
-            logging.warning(f"Skipping {session}: No video.mp4")
+        # Check if video exists (Normal Mode)
+        has_video = os.path.exists(video_file)
+        
+        # Check if it's an "Empty" or "Noise" session (Blind Mode)
+        is_blind = "empty" in os.path.basename(session).lower() or "noise" in os.path.basename(session).lower()
+        
+        if not has_video and not is_blind:
+            logging.warning(f"Skipping {session}: No video.mp4 (and not marked as Empty/Noise)")
             skip_count += 1
             continue
+            
+        logging.info(f"Processing {session} (Blind={is_blind})...")
             
         if not os.path.exists(labels_file) or args.force_relabel:
             # logging.info(f"Processing {session}...") # Reduce log spam

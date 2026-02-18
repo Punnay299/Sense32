@@ -7,6 +7,7 @@ import os
 import sys
 import logging
 import numpy as np
+from sklearn.metrics import confusion_matrix, classification_report
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -22,7 +23,7 @@ def train_one_epoch(model, loader, optimizer, criterion_pose, criterion_pres, cr
     total_loc = 0
     
     for batch in loader:
-        rf = batch["rf"].to(device) # [Batch, 64, Seq]
+        rf = batch["rf"].to(device) # [Batch, 128, Seq]
         pose_gt = batch["pose"].to(device)
         pres_gt = batch["presence"].to(device)
         loc_gt = batch["location"].to(device)
@@ -44,7 +45,7 @@ def train_one_epoch(model, loader, optimizer, criterion_pose, criterion_pres, cr
         # The network does: x.permute(0, 2, 1) -> implies input is (B, L, C).
         # Our dataset outputs (B, C, L).
         # So we should pass (B, L, C) to network.
-        rf = rf.permute(0, 2, 1) # [Batch, Seq, 64]
+        rf = rf.permute(0, 2, 1) # [Batch, Seq, 256]
         
         pose_pred, pres_pred, loc_pred = model(rf)
         
@@ -93,9 +94,14 @@ def validate(model, loader, criterion_pose, criterion_pres, criterion_loc, devic
     correct_loc = 0
     total_loc = 0
     
+    all_loc_preds = []
+    all_loc_gts = []
+    all_pres_preds = []
+    all_pres_gts = []
+    
     with torch.no_grad():
         for batch in loader:
-            rf = batch["rf"].to(device).permute(0, 2, 1)
+            rf = batch["rf"].to(device).permute(0, 2, 1) # [Batch, Seq, 256]
             pose_gt = batch["pose"].to(device)
             pres_gt = batch["presence"].to(device)
             loc_gt = batch["location"].to(device)
@@ -110,18 +116,48 @@ def validate(model, loader, criterion_pose, criterion_pres, criterion_loc, devic
             loss = loss_pres + loss_pose + (0.5 * loss_loc)
             running_loss += loss.item()
             
+            # Binary Presence
             preds = (pres_pred > 0.5).float()
             correct_pres += (preds == pres_gt).sum().item()
             total_pres += pres_gt.size(0)
             
+            all_pres_preds.extend(preds.cpu().numpy())
+            all_pres_gts.extend(pres_gt.cpu().numpy())
+            
+            # Multi-class Location
             _, loc_preds = torch.max(loc_pred, 1)
             correct_loc += (loc_preds == loc_gt).sum().item()
             total_loc += loc_gt.size(0)
+            
+            all_loc_preds.extend(loc_preds.cpu().numpy())
+            all_loc_gts.extend(loc_gt.cpu().numpy())
             
     avg_loss = running_loss / len(loader) if len(loader) > 0 else 0
     acc_pres = correct_pres / total_pres if total_pres > 0 else 0
     acc_loc = correct_loc / total_loc if total_loc > 0 else 0
     
+    # Detailed Metrics
+    if total_loc > 0:
+        logging.info("\n--- Validation Metrics ---")
+        logging.info(f"Presence Accuracy: {acc_pres:.2%}")
+        logging.info(f"Location Accuracy: {acc_loc:.2%}")
+        
+        try:
+            target_names = ["Room A", "Room B", "Hallway", "Empty"]
+            # Filter classes that actually exist in GT to avoid sklearn warnings
+            unique_labels = sorted(list(set(all_loc_gts)))
+            present_names = [target_names[i] for i in unique_labels]
+            
+            cm = confusion_matrix(all_loc_gts, all_loc_preds, labels=unique_labels)
+            logging.info("\nConfusion Matrix:")
+            logging.info(f"\n{cm}")
+            
+            report = classification_report(all_loc_gts, all_loc_preds, labels=unique_labels, target_names=present_names, zero_division=0)
+            logging.info("\nClassification Report:")
+            logging.info(f"\n{report}")
+        except Exception as e:
+            logging.error(f"Failed to generate detailed metrics: {e}")
+
     return avg_loss, acc_pres, acc_loc
 
 def main():
@@ -205,14 +241,42 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f"Using device: {device}")
     
-    model = WifiPoseModel(input_features=64, output_points=33).to(device)
+    model = WifiPoseModel(input_features=320, output_points=33).to(device)
     
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
     
+    # Calculate Class Weights to handle imbalance (e.g. lots of Empty noise)
+    # We can iterate over the dataset to count classes
+    logging.info("Calculating class weights...")
+    class_counts = {0: 0, 1: 0, 2: 0, 3: 0}
+    for i in range(len(train_subset)):
+         # Accessing dataset item is slow as it transforms. 
+         # A faster way is to access the underlying label dicts in valid_indices.
+         # train_subset -> dataset -> valid_indices
+         # Subset maps indices.
+         orig_idx = train_subset.indices[i]
+         _, _, lbl = train_ds_raw.valid_indices[orig_idx]
+         c = lbl["location"]
+         class_counts[c] += 1
+    
+    logging.info(f"Class Counts: {class_counts}")
+    total_samples = sum(class_counts.values())
+    weights = []
+    for i in range(4):
+        count = class_counts.get(i, 0)
+        if count > 0:
+            w = total_samples / (4 * count) # Balanced weight
+        else:
+            w = 1.0
+        weights.append(w)
+        
+    class_weights = torch.tensor(weights, dtype=torch.float32).to(device)
+    logging.info(f"Class Weights: {class_weights}")
+    
     criterion_pose = nn.MSELoss()
     criterion_pres = nn.BCELoss()
-    criterion_loc = nn.CrossEntropyLoss()
+    criterion_loc = nn.CrossEntropyLoss(weight=class_weights)
     
     # 4. Training Loop
     best_val_loss = float('inf')

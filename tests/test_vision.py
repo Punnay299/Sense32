@@ -13,11 +13,11 @@ class TestVision(unittest.TestCase):
         # We can test with a dummy frame
         self.frame = np.zeros((480, 640, 3), dtype=np.uint8)
 
-    @patch('src.vision.pose.mp')
-    def test_pose_estimator_init(self, mock_mp):
+    @patch('src.vision.pose.mp_pose')
+    def test_pose_estimator_init(self, mock_mp_pose):
         """Test that PoseEstimator initializes without error."""
         # Setup mock
-        mock_mp.solutions.pose.Pose.return_value = MagicMock()
+        mock_mp_pose.Pose.return_value = MagicMock()
         
         try:
             estimator = PoseEstimator()
@@ -25,12 +25,12 @@ class TestVision(unittest.TestCase):
         except Exception as e:
             self.fail(f"PoseEstimator init failed: {e}")
 
-    @patch('src.vision.pose.mp')
-    def test_process_frame_structure(self, mock_mp):
+    @patch('src.vision.pose.mp_pose')
+    def test_process_frame_structure(self, mock_mp_pose):
         """Test that process_frame returns expected structure."""
         # Setup mock return values
         mock_pose_instance = MagicMock()
-        mock_mp.solutions.pose.Pose.return_value = mock_pose_instance
+        mock_mp_pose.Pose.return_value = mock_pose_instance
         
         # Mock results
         mock_results = MagicMock()

@@ -23,10 +23,11 @@ class TestModel(unittest.TestCase):
         if not TORCH_AVAILABLE:
             self.skipTest("PyTorch not installed")
     def test_model_structure(self):
-        # Input: Batch=2, Seq=50, Feat=128 (Dual Node)
-        input_tensor = torch.randn(2, 50, 128)
+        # Input: Batch=2, Seq=50, Feat=256 (Dual Node: 128 Amp + 128 Phase)
+        input_tensor = torch.randn(2, 50, 256)
         
-        model = WifiPoseModel(input_features=128, output_points=33)
+        # Initialize with 256 input features
+        model = WifiPoseModel(input_features=256, output_points=33)
         
         # Test default forward
         pose, presence, location = model(input_tensor)
@@ -43,18 +44,10 @@ class TestModel(unittest.TestCase):
         self.assertTrue(torch.all(presence <= 1))
 
     def test_variable_sequence_length(self):
-        # LSTM should handle variable lengths but our CNN is 1D across time dim (dim 2 after permute)
-        # CNN input (B, C, L). If L changes, Output L changes.
-        # LSTM input (B, L, C). 
-        # Wait, RFEncoder:
-        # x = x.permute(0, 2, 1) -> (B, 2, L)
-        # CNN: (B, 32, L) -> (B, 64, L)
-        # x.permute(0, 2, 1) -> (B, L, 64)
-        # LSTM input (B, L, 64) -> output (B, L, Hidden) -> Last hidden state
-        # So yes, it should work with any length L.
+        # LSTM should handle variable lengths
         
-        input_tensor = torch.randn(1, 100, 128)
-        model = WifiPoseModel(input_features=128, output_points=33)
+        input_tensor = torch.randn(1, 100, 256)
+        model = WifiPoseModel(input_features=256, output_points=33)
         pose, _, _ = model(input_tensor)
         self.assertEqual(pose.shape, (1, 66))
 
