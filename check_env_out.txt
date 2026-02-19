@@ -1,0 +1,22 @@
+============================================================
+             Wi-Fi CSI Environment Checker
+============================================================
+[INFO] Python: 3.11.8
+[PASS] Python version ok.
+--------------------
+[INFO] Checking pip packages...
+[PASS] numpy: 2.4.1
+[PASS] opencv-python: 4.13.0.90
+[PASS] torch: 2.10.0
+[PASS] mediapipe: 0.10.9
+--------------------
+[INFO] Verifying imports...
+[PASS] numpy imported.
+[PASS] cv2 imported.
+[PASS] torch imported (CUDA: True).
+--------------------
+[INFO] Diagnosing MediaPipe...
+[PASS] 'import mediapipe' works. Path: /home/punnay/.pyenv/versions/3.11.8/lib/python3.11/site-packages/mediapipe
+[PASS] 'import mediapipe.python.solutions' works.
+============================================================
+Done.

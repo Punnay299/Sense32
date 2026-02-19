@@ -1,0 +1,60 @@
+punnay@localhost:~/Desktop/CS/Projects/CSI_M/Wi-Fi-Human-Detection-Pose-Estimation-main$ /home/punnay/.pyenv/versions/3.11.8/bin/python /home/punnay/Desktop/CS/Projects/CSI_M/Wi-Fi-Human-Detection-Pose-Estimation-main/scripts/run_tests_safely.py
+Found 13 tests.
+Running tests/test_core.py... PASS
+Running tests/test_csi_capture.py... PASS
+Running tests/test_dataset_only.py... PASS
+Running tests/test_dual_node_integration.py... PASS
+Running tests/test_inference_logic.py... PASS
+Running tests/test_integration.py... FAIL
+--- Output of tests/test_integration.py ---
+
+/home/punnay/.pyenv/versions/3.11.8/lib/python3.11/site-packages/torch/nn/modules/loss.py:626: UserWarning: Using a target size (torch.Size([4, 34])) that is different to the input size (torch.Size([4, 66])). This will likely lead to incorrect results due to broadcasting. Please ensure they have the same size.
+  return F.mse_loss(input, target, reduction=self.reduction)
+E
+======================================================================
+ERROR: test_training_step (__main__.TestIntegration.test_training_step)
+Perform a single synthetic training step to verify backward pass works.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/punnay/Desktop/CS/Projects/CSI_M/Wi-Fi-Human-Detection-Pose-Estimation-main/tests/test_integration.py", line 39, in test_training_step
+    loss = criterion_pose(pred_pose, labels_pose)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/punnay/.pyenv/versions/3.11.8/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/punnay/.pyenv/versions/3.11.8/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/punnay/.pyenv/versions/3.11.8/lib/python3.11/site-packages/torch/nn/modules/loss.py", line 626, in forward
+    return F.mse_loss(input, target, reduction=self.reduction)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/punnay/.pyenv/versions/3.11.8/lib/python3.11/site-packages/torch/nn/functional.py", line 3930, in mse_loss
+    expanded_input, expanded_target = torch.broadcast_tensors(input, target)
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/punnay/.pyenv/versions/3.11.8/lib/python3.11/site-packages/torch/functional.py", line 77, in broadcast_tensors
+    return _VF.broadcast_tensors(tensors)  # type: ignore[attr-defined]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: The size of tensor a (66) must match the size of tensor b (34) at non-singleton dimension 1
+
+----------------------------------------------------------------------
+Ran 1 test in 0.464s
+
+FAILED (errors=1)
+
+---------------------
+Running tests/test_mock_nn.py... PASS
+Running tests/test_model.py... PASS
+Running tests/test_model_scaling.py... PASS
+Running tests/test_rf.py... PASS
+Running tests/test_robustness.py... PASS
+Running tests/test_scapy_capture.py... PASS
+Running tests/test_vision.py... PASS
+
+================ Results ================
+Passed: 12
+Failed: 1
+Timed Out: 0
+
+Failed Tests:
+- tests/test_integration.py
+punnay@localhost:~/Desktop/CS/Projects/CSI_M/Wi-Fi-Human-Detection-Pose-Estimation-main$ 

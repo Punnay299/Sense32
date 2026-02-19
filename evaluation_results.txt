@@ -1,0 +1,17 @@
+              precision    recall  f1-score   support
+
+      Room A       1.00      0.97      0.98      7221
+      Room B       0.94      0.96      0.95      7376
+     Hallway       0.94      0.95      0.95      5763
+       Empty       1.00      1.00      1.00      8136
+
+    accuracy                           0.97     28496
+   macro avg       0.97      0.97      0.97     28496
+weighted avg       0.97      0.97      0.97     28496
+
+
+Confusion Matrix:
+[[7006  209    6    0]
+ [   7 7056  313    0]
+ [   0  244 5503   16]
+ [   1   17    3 8115]]
