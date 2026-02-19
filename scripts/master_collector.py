@@ -14,7 +14,13 @@ ZONES = []
 for i in range(1, 6):
     ZONES.append({"name": f"room_a_{i:02d}", "desc": f"Room A (Session {i}/5): Randomized Walk/Sit", "duration": 60})
 
+<<<<<<< HEAD
 # Room B: REMOVED (User Request Feb 2026)
+=======
+# Room B: 5 Sessions
+for i in range(1, 6):
+    ZONES.append({"name": f"room_b_{i:02d}", "desc": f"Room B (Session {i}/5): Randomized Walk/Sit", "duration": 60})
+>>>>>>> 13df1a04fdb73b11e46b9521dadbc0b59d78f8ab
 
 # Hallway: 4 Sessions
 for i in range(1, 5):
@@ -30,7 +36,10 @@ def find_esp32_ips(port=8888, duration=5):
     print(f"\n>> Scanning for ESP32s on Port {port} for {duration} seconds...")
     
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+<<<<<<< HEAD
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+=======
+>>>>>>> 13df1a04fdb73b11e46b9521dadbc0b59d78f8ab
     sock.settimeout(1.0)
     try:
         sock.bind(("0.0.0.0", port))
@@ -61,7 +70,11 @@ def find_esp32_ips(port=8888, duration=5):
 def main():
     print("=========================================")
     print("   Wi-Fi Sensing: Master Data Collector  ")
+<<<<<<< HEAD
     print("       (Scaled: 14 Sessions: 5 A + 4 Hall + 5 Empty) ")
+=======
+    print("       (Scaled: 15 Sessions)             ")
+>>>>>>> 13df1a04fdb73b11e46b9521dadbc0b59d78f8ab
     print("=========================================")
     
     # 1. Discovery

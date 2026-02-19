@@ -179,11 +179,14 @@ def main():
         if os.path.exists(base_dir):
             for name in os.listdir(base_dir):
                 path = os.path.join(base_dir, name)
+<<<<<<< HEAD
                 # Filter: Exclude Room B
                 if "room_b" in name.lower() or "room2" in name.lower():
                     logging.info(f"Skipping {name} (Room B excluded via user request)")
                     continue
                     
+=======
+>>>>>>> 13df1a04fdb73b11e46b9521dadbc0b59d78f8ab
                 if os.path.isdir(path) and "session_" in name:
                     sessions.append(path)
     elif args.session:

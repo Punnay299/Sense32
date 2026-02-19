@@ -209,11 +209,18 @@ def main():
                         
                         pres_prob = pred_pres.item()
                         
+<<<<<<< HEAD
                         # LOGIC: Always Room A if not Hallway (Camera)
                         loc_text = "Room A"
                         
                         # Only draw the pose if presence is high enough to visualize
                         if pres_prob > 0.4:
+=======
+                        # LOGIC: If Presence > 0.4 -> ROOM A
+                        if pres_prob > 0.4:
+                            loc_text = "Room A"
+                            
+>>>>>>> 13df1a04fdb73b11e46b9521dadbc0b59d78f8ab
                             # Draw Ghost Pose
                             pose_coords = pred_pose.cpu().numpy()[0]
                             for i in range(0, len(pose_coords), 2):
@@ -223,8 +230,13 @@ def main():
                                     cv2.circle(frame, (x, y), 5, (0, 0, 255), -1)
                             cv2.putText(frame, f"ROOM A (Pres: {pres_prob:.2f})", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
                         else:
+<<<<<<< HEAD
                             # Still Room A, just no visualization
                             cv2.putText(frame, "ROOM A (Waiting for visualization...)", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+=======
+                            loc_text = "Empty"
+                            cv2.putText(frame, "EMPTY", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (200, 200, 200), 2)
+>>>>>>> 13df1a04fdb73b11e46b9521dadbc0b59d78f8ab
                     else:
                         loc_text = "Buffering..."
 
